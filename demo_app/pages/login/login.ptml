@@ -1,0 +1,22 @@
+@page("/login", "Login") @props {
+    from .login_form import LoginForm
+}
+
+@ptml {
+    <div className="login-page">
+        <div className="inner-page">
+            <div className="login-container">
+                <div className="logo-holder">
+                    <img className="logo" src="assets/logo.svg" />
+                </div>
+                <h2>Wocom Account Login</h2>
+                
+                <LoginForm @{**props}/>
+            </div>
+        </div>
+    </div>
+}
+
+@style(name="login.css") {
+    
+}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block content %}
+{{ super() }}
+{% if not page.meta.hide or 'footer' not in page.meta.hide %}
+  {% include "partials/footer.html" %}
+{% endif %}
+{% endblock %}
+
+{% block footer %}{% endblock %}
+

@@ -1,0 +1,108 @@
+@page("/todos/:id?", "TodoList") @props {
+    from metafor.core import create_effect, create_signal, after_update, before_update, on_dispose, on_mount
+    from metafor.hooks import use_context, create_memo
+    from contexts import ThemeContext
+    from metafor.components import Portal
+
+    theme = use_context(ThemeContext)
+
+    todos, set_todos = create_signal([
+        {"id": 1, "text": "Learn PyScript", "completed": True},
+        {"id": 2, "text": "Build a SolidJS-like framework", "completed": False},
+        {"id": 3, "text": "Create amazing web apps with Python", "completed": False}
+    ], deep=True)
+
+
+    new_todo, set_new_todo = create_signal("")
+    
+    def add_todo(event):
+        if not new_todo().strip():
+            return
+
+        # uses deep reactivity
+        todos().append({
+            "id": len(todos()) + 1,
+            "text": new_todo(),
+            "completed": False 
+        })
+    
+        set_new_todo("")
+    
+    def toggle_todo(todo_id):
+        updated_todos = []
+        print("Toggle todo: ", todo_id)
+        for todo in todos():
+            if todo["id"] == todo_id:
+                todo = todo.copy()
+                todo["completed"] = not todo["completed"]
+
+            updated_todos.append(todo)
+            
+        set_todos(updated_todos)
+    
+    def handle_key_press(event):
+        if event.key == "Enter":
+            add_todo(event)
+
+    def create_todo_item(todo, index):
+        print("Creating todo item: ", todo)
+        return @t{<li 
+            className=@{lambda: f"todo-item {('completed' if todo['completed'] else '')}"}
+            key=@{str(todo["id"])}
+        >
+            <input
+                type="checkbox"
+                className="form-check-input me-2"
+                checked=@{lambda: "checked" if todo["completed"] else None}
+                onclick=@{lambda e: toggle_todo(todo["id"])}
+            />
+            <span>@{todo["text"]}</span>
+        </li>}
+
+    remaining = create_memo(lambda: sum(1 for todo in todos() if not todo["completed"]))
+
+    print(f'TodoList Props {props}')
+}
+
+@ptml {
+
+    <div className=@{lambda: f'todo-list theme-{theme()}'}>
+        <h2>Todo List</h2>
+        
+        <div className="todo-input input-group">
+            <input className="form-control" type="text" placeholder="Add new todo" value=@{new_todo} onkeyup=@{handle_key_press} oninput=@{ lambda e: set_new_todo(e.target.value)} />
+            <button className="btn btn-success" onclick=@{add_todo}>Add</button>
+        </div>
+
+        <div className="todo-items">
+            <ul>
+                @foreach todo in todos, key=lambda todo, _: todo['id'] {
+                    <li key=@{str(todo["id"])}
+                        className=@{lambda: f'todo-item {("completed" if todo["completed"] else "")}'}>
+                        <input 
+                            className="form-check-input me-2" 
+                            type="checkbox" 
+                            checked=@{lambda: "checked" if todo["completed"] else None} 
+                            onchange=@{lambda event: toggle_todo(todo["id"])} />
+                        <span>@{todo["text"]}</span>
+                    </li>
+
+                } -> @fallback {
+                    <li>No todos</li>
+                }
+            </ul>
+        </div>
+
+        <div className="mt-3">
+            @{lambda: remaining()} items remaining
+        </div>
+
+        <Portal container="#telepot-outlet">
+            <div><h4>Portal content</h4></div>
+        </Portal>
+    </div>
+}
+
+@style {
+    
+}

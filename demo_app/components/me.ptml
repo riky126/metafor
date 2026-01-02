@@ -1,0 +1,22 @@
+@component("Me") @props {
+    from js import console
+    from typing import Any, Optional
+    from types import FunctionType 
+    from metafor.core import Signal
+
+    @prop profile: Signal
+    @prop handle_update_profile: Any
+    @prop handle_update_age: FunctionType
+
+    profile = props["profile"]
+}
+
+@ptml {
+    <div>
+        <p>Name: @{lambda: profile()["name"]}</p>
+        <p>Age: @{lambda: profile()["age"]}</p>
+        <p>City: @{lambda: profile()["city"]}</p>
+        <button className="btn btn-secondary me-2" onclick=@{handle_update_profile}>Update Name and City</button>
+        <button className="btn btn-secondary" onclick=@{handle_update_age}>Update Age</button>
+    </div>
+}   

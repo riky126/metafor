@@ -1,0 +1,110 @@
+@component("LoginForm") @props {
+     from js import console, FormData
+     from metafor.hooks import create_memo, create_signal, use_provider
+     from metafor.core import create_ref
+     from typing import Dict, Any, Callable, get_args, Union, Optional
+     from metafor.utils import run_async
+     from metafor.form import  create_form
+     from metafor.form.schema import Schema
+     from app_state import container, app_provider
+     from services import do_auth
+
+     router = props.get("router")
+
+     auth_error, set_auth_error = create_signal(None)
+     children = props.get('children', [])
+     auth_error, set_auth_error = create_signal(None)
+     
+     # Define the form schema
+     form_schema = Schema()
+     
+     form_schema.field('email').string().email().required().trim()
+     form_schema.field('password').string().required().trim().min_length(1)
+     form_schema.field('remember_me').bool().required().default_value(False)
+
+     # Create the form instance
+     form = create_form(
+          form_schema=form_schema,
+          initial_values={"email": "", "password": ""}
+     )
+
+     # Use create_ref() for DOM element ref
+     form_ref = create_ref()
+
+     # Watch for changes
+     app_state, set_state = use_provider(container, app_provider)
+
+     is_enabled = create_memo(lambda: not form.field("email").is_empty and not form.field("password").is_empty)
+
+     def auth_success(response):
+          set_state({"auth_user": response})
+          router.go("/")
+
+     def auth_fail(error):
+          print(f"Authenticate fail: {error}")
+          set_auth_error(error.original_error.response.get("data").error)
+
+     def on_field_change(event):
+          set_auth_error(None)
+    
+     def submit_form(data):
+          set_auth_error(None)
+          
+          if form.is_valid():
+              run_async(
+                    do_auth,
+                    kwargs=data,
+                    on_success=auth_success,
+                    on_error=auth_fail
+               )
+
+     def handle_submit(event):
+          event.preventDefault()
+          form.handle_submit(submit_form)
+
+     show_error = create_memo(lambda:  auth_error()[0].upper() + auth_error()[1:] if auth_error() else '') 
+}
+
+@ptml {
+    <form ref:=form_ref onsubmit=@{handle_submit} >
+       <p className="error-msg">@{show_error}</p>
+       <sl-input 
+          @{**form.bind_input("email")}  
+          size="medium" required=True 
+          type="text" placeholder="Email" 
+          onkeydown="on_field_change" 
+          autocomplete="off"
+       >
+            <sl-icon name="person-fill" slot="prefix"/>
+       </sl-input>
+       <sl-input 
+          @{**form.bind_input("password")} 
+          size="medium" type="password" 
+          placeholder="Password" 
+          onkeydown="on_field_change"
+       >
+            <sl-icon name="lock-fill" slot="prefix"/>
+       </sl-input>
+       <sl-button 
+          disabled=@{lambda: not is_enabled()} 
+          size="large"  
+          lassName="login-btn" 
+          type="submit"
+        >
+          Sign In</sl-button>
+       <div className="ip-holder">
+            <a href="#">Forgot Password?</a>
+       </div>
+       <div className="ip-holder">
+            <a href="#">Create Account</a>
+       </div>
+    </form>
+}
+
+@style {
+  body {
+    font-family: Arial, sans-serif;
+    background-color: #fff;
+    color: #636363;
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "name": "metafor-vscode",
+  "publisher": "metafor",
+  "displayName": "Metafor PTML Support",
+  "description": "Language support for Metafor PTML files",
+  "version": "0.1.0",
+  "icon": "logo.png",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "ptml",
+        "aliases": [
+          "Metafor PTML",
+          "ptml"
+        ],
+        "extensions": [
+          ".ptml"
+        ],
+        "icon": {
+          "light": "./icons/file_type_ptml.svg",
+          "dark": "./icons/file_type_ptml.svg"
+        },
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ptml",
+        "scopeName": "source.ptml",
+        "path": "./syntaxes/ptml.tmLanguage.json"
+      }
+    ]
+  }
+}

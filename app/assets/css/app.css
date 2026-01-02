@@ -1,0 +1,265 @@
+
+/* You can add global styles to this file, and also import other style files */
+:root {
+  --sl-color-primary-50:#faf0ff;
+  --sl-color-primary-100:#f4e3f8;
+  --sl-color-primary-300:#eaccf0;
+  --sl-color-primary-400:#d6aae6;
+  --sl-color-primary-600: rgb(186, 151, 198);
+  --sl-color-sky-500: #cda8de;
+
+  --sl-border-radius-medium: 0.4rem;
+  --docs-border-radius: var(--sl-border-radius-medium);
+  --sl-font-sans: -apple-system, Helvetica, Arial, sans-serif;
+
+  --sl-input-focus-ring-color: rgb(229, 222, 237);
+  /* --sl-input-border-color: #d8d0ec; */
+  --sl-input-focus-ring-style: solid;
+  --sl-input-focus-ring-width: .01em;
+  --sl-input-focus-ring: var(--sl-focus-ring-style) var(--sl-focus-ring-width) rgb(229, 222, 237);
+  --sl-input-focus-ring-offset: 1px;
+
+  --wc-primary-color: rgba(111, 31, 173, 0.867);
+  --wc-corner-radius: 0.8rem;
+  --wc-primary-btn-color: #e8d7ed;
+  --wc-primary-btn-hover-color: #dac4dd;
+  --wc-primary-btn-text-color: #512151;
+}
+
+body, html {
+  margin: 0;
+  height: 100%;
+  font-family: Arial, sans-serif;
+  color: #3c3c3d;
+  letter-spacing: 0.01rem;
+}
+
+body * {
+  box-sizing: border-box;
+}
+
+img {
+  width: auto;
+}
+
+.main {
+  margin: 0;
+  padding: 0rem;
+  overflow-y: auto;
+}
+
+* {
+  border-collapse: collapse;
+}
+
+sl-input::part(input) {
+  height: inherit;
+}
+
+sl-input::part(base):focus-within {
+  border-color: #c6afe2; /* Replace with your desired color */
+  box-shadow: 0 0 0 2px var(--sl-input-focus-ring-color); /* Optional: Add a shadow */
+}
+
+sl-select::part(clear-button) {
+  color: #afadb0;
+
+  &:hover{
+    color: #c3c2c3;
+  }
+}
+
+a {
+ color: #b122d4 !important;
+ cursor: pointer;
+}
+
+a:hover {
+  text-decoration: underline !important;
+}
+
+
+sl-button::part(base) {
+  color: #67586b;
+  border-radius: 0.6rem;
+}
+
+sl-button::part(base):hover,
+sl-button::part(base):focus {
+  color: #770594;
+}
+
+sl-button::part(base):active {
+  color: #8909a9;
+}
+
+sl-option::part(base) {
+  border-radius: 0.4rem;
+  margin: 0rem 0.3rem;
+}
+
+sl-alert::part(message) {
+  padding: 0.6rem 1rem;
+}
+
+/* Change the background color of the selected option */
+sl-option[aria-selected="true"]::part(base) {
+  background-color: rgb(186, 151, 198);
+}
+
+sl-checkbox::part(base) {
+  font-size: large;
+}
+
+sl-checkbox::part(control) {
+  border-radius: 0.35rem;
+}
+
+/* option--current */
+
+.error-messages {
+ list-style: none;
+}
+
+.error-messages li {
+  color: #db4213;
+}
+
+.page-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+
+  sl-button::part(base) {
+      font-size: 1.2rem;
+      color: #734e7b;
+
+      &:hover {
+          color: #770594;
+      }
+  }
+
+  sl-icon {
+      font-size: 1.1rem;
+  }
+}
+
+sl-button.primary::part(base) {
+  --sl-button-padding-top: 10px;
+  --sl-button-padding-bottom: 10px;
+  background-color: var(--wc-primary-btn-color);
+  border-color: var(--wc-primary-btn-color);
+  color: var(--wc-primary-text-color);;
+  transition: all 0.4s;
+  font-size: 0.9rem;
+  border-radius: 0.5rem;
+  
+  sl-icon {
+    font-size: 0.8rem;
+  }
+}
+
+sl-button.primary sl-icon {
+  sl-icon {
+    font-size: 0.8rem;
+  }
+}
+
+sl-button.primary:hover::part(base) {
+  background-color: var(--wc-primary-btn-hover-color);
+  border-color: var(--wc-primary-btn-hover-color);
+}
+
+.apexcharts-bar-area:hover,
+.apexcharts-pie-series:hover path,
+.apexcharts-radial-series:hover path {
+  filter: brightness(1.1);
+  transition: all 0.2s ease-out;
+}
+
+/* a {
+  margin: 0px 10px;
+  text-decoration: none;
+} */
+
+.theme-dark {
+  background-color: #3d3d3e; 
+  color: #eee;
+
+  sl-menu {
+    background-color: #4a4a4b;
+    border-color: #555557;
+    box-shadow: 0px 0px 8px #0000002d;
+  }
+
+  sl-menu-item:hover::part(base) {
+    background-color: #555556;
+  }
+
+  sl-button::part(base),
+  sl-menu-item::part(base) {
+    color: #eee;
+  }
+
+  sl-divider {
+    border-top-color: #575758 !important;
+  }
+
+  .footer {
+    background-color: #464647 !important;
+    color: #a7a7a7 !important;
+  }
+
+}
+
+.theme-dark * {
+  color: #eee;
+}
+
+.theme-light{
+  background-color: #fff;
+  color: #3d3d3e;
+}
+
+.theme-light .btn-light{
+  color: #3d3d3e;
+}
+
+.theme-dark .btn-dark{
+  color: #eee;
+}
+
+.counter {
+  border: 1px solid #ebebeb;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 20px 0;
+}
+
+.theme-dark {
+  .counter {
+    border: 1px solid #4a4a4a;
+    background-color: #434343;
+  }
+
+  .form-control {
+    border: 1px solid #626262;
+    background-color: #565656;
+    color: #ebebeb
+  }
+}
+
+.todo-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.todo-item.completed span {
+  text-decoration: line-through;
+  color: #888;
+}
+
+.todo-input {
+  margin-bottom: 20px;
+}

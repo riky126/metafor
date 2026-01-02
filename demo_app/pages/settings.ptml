@@ -1,0 +1,10 @@
+@page("/settings", "Settings") @props {
+
+}
+
+@ptml {
+    <div>
+        <h2>Settings Page</h2>
+        <p>Settings page content</p>
+    </div>
+}

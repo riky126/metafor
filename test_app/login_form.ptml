@@ -1,0 +1,30 @@
+@component("LoginForm") @props {
+    from metafor.hooks import create_memo, create_signal
+    from typing import Dict, Any, Callable, get_args, Union, Optional
+
+    auth_error, set_auth_error = create_signal(None)
+    children = props.get('children', [])
+
+    # @effect {
+        
+    # }
+
+    @prop name: Any = "some default value"
+
+    print(name)
+
+}
+
+@ptml {
+    <h1>Login Form</h1>
+    @{children}
+    <p>external props: @{name}</p>
+}
+
+@style {
+  body {
+    font-family: Arial, sans-serif;
+    background-color: #fff;
+    color: #636363;
+  }
+}

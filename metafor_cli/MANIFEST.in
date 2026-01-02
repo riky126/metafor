@@ -1,0 +1,2 @@
+recursive-include metafor_cli/templates *
+recursive-include metafor *

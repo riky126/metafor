@@ -1,0 +1,76 @@
+@component("App") @props {
+  from login_form import LoginForm
+  from js import console
+  from metafor.hooks import create_memo, create_signal
+  
+  from routes import router
+
+  auth_error, set_auth_error = create_signal("Invalid")
+  
+  error = False
+  success = True
+  fields = [
+    {"name": "username", "label": "Username", "type": "text"},
+    {"name": "password", "label": "Password", "type": "password"},
+  ]
+
+  def click_handler(evt, data):
+    console.log(evt.target)
+    evt.preventDefault()
+    set_auth_error(data)
+    print(data)
+}
+
+@ptml {
+    <h1>Welcome to My Web Page</h1>
+    <p style="color: gray;">This is a simple example of a web page using PTML.</p>
+    <LoginForm name:=fields>
+        @if error {
+            <p style="color: red;">Invalid username or password.</p>
+        }
+
+        @if success {
+            <p style="color: green;">Login successful!</p>
+        }
+
+        @foreach field in fields {
+            <label for="@{field['name']}">@{field['label']}</label>
+            <input type="@{field['type']}" name="@{field['name']}" id="@{field['name']}" required />
+        }
+
+        @switch auth_error() {
+            @match "Invalid" {
+                <p style="color: red;">Invalid username or password.</p>
+            }
+            @match "Successful" {
+                <p style="color: green;">Login successful!</p>
+            }
+        }
+
+        <button type="submit" onclick=@{evt -> click_handler(evt, "Successful")}>Login</button>
+    </LoginForm>
+
+    <LoginForm />
+
+    /* Router outlet */
+    @{router.route_outlet()}
+    /* End router outlet */
+
+    <p>Thank you for visiting!</p>
+}
+
+@style {
+  * {
+    font-family: Arial, sans-serif;
+    background-color: #fff;
+    color: #636363;
+  }
+  
+  h1 {
+    color: #000;
+  }
+  
+  p {
+    line-height: 1.6;
+  }
+}

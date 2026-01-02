@@ -1,0 +1,41 @@
+@page("/", "Home") @props {
+    from metafor.core import create_signal, create_effect
+    from metafor.hooks import create_memo
+    count, set_count = create_signal(0)
+    data, set_data = create_signal({"name": "John", "age": 30})
+    print(props)
+    
+    def increment(evt):
+        set_data({
+          **data(),
+          "name": "ricardo"
+        })
+        set_count(count() + 1)
+    
+    def decrement(evt):
+        set_count(count() - 1)
+
+    create_effect(lambda: print(f"Count: {count()}"))
+
+    mydouble = create_memo(lambda: count() * 2)
+}
+
+@ptml {
+    <h1>Home Page</h1>
+    <p style="color: gray;">this is the Home Page.</p>
+    <p>Count: @{count}</p>
+    <p>Double: @{mydouble}</p>
+    <button onclick=@{increment}>Increment</button>
+    <button onclick=@{decrement}>Decrement</button>
+    @{lambda: data()['name']}
+}
+
+@style {
+  h1 {
+    color: #000;
+  }
+  
+  p {
+    line-height: 1.6;
+  }
+}

@@ -1,0 +1,122 @@
+{
+    "scopeName": "source.ptml",
+    "patterns": [
+        {
+            "include": "#python-block"
+        },
+        {
+            "include": "#ptml-block"
+        },
+        {
+            "include": "#style-block"
+        },
+        {
+            "match": "<-",
+            "name": "keyword.operator.chain.ptml"
+        },
+        {
+            "include": "source.python"
+        }
+    ],
+    "repository": {
+        "python-block": {
+            "begin": "((?:(?:<-)\\s*)?(?:@(?:component|props|val|value|context|App)(?:\\([^)]*\\))?\\s*)+)(\\{)",
+            "beginCaptures": {
+                "1": { "patterns": [
+                    { "match": "<-", "name": "keyword.operator.chain.ptml" },
+                    { "include": "source.python" }
+                ] },
+                "2": { "name": "punctuation.section.block.begin.ptml" }
+            },
+            "end": "\\}",
+            "endCaptures": {
+                "0": { "name": "punctuation.section.block.end.ptml" }
+            },
+            "patterns": [
+                { "include": "#nested-braces" },
+                { "include": "#metafor-keywords" },
+                { "include": "source.python" }
+            ]
+        },
+        "nested-braces": {
+            "begin": "\\{",
+            "beginCaptures": { "0": { "include": "source.python" } },
+            "end": "\\}",
+            "endCaptures": { "0": { "include": "source.python" } },
+            "patterns": [
+                { "include": "#nested-braces" },
+                { "include": "#metafor-keywords" },
+                { "include": "source.python" }
+            ]
+        },
+        "metafor-keywords": {
+            "patterns": [
+                {
+                    "match": "@(value|val)\\b",
+                    "name": "keyword.control.directive.value.ptml"
+                }
+            ]
+        },
+        "ptml-block": {
+            "begin": "(@ptml)\\s*(\\{)",
+            "beginCaptures": {
+                "1": { "patterns": [{ "include": "source.python" }] },
+                "2": { "name": "punctuation.section.block.begin.ptml" }
+            },
+            "end": "\\}",
+            "endCaptures": {
+                "0": { "name": "punctuation.section.block.end.ptml" }
+            },
+            "patterns": [
+                {
+                    "include": "#embedded-python"
+                },
+                {
+                    "include": "text.html.basic"
+                }
+            ]
+        },
+        "embedded-python": {
+            "begin": "@\\{",
+            "beginCaptures": {
+                "0": { "name": "punctuation.section.embedded.begin.ptml" }
+            },
+            "end": "\\}",
+            "endCaptures": {
+                "0": { "name": "punctuation.section.embedded.end.ptml" }
+            },
+            "patterns": [
+                { "include": "#nested-braces" },
+                { "include": "source.python" }
+            ]
+        },
+        "style-block": {
+            "patterns": [
+                {
+                    "begin": "(@style(?:\\([^)]*\\))?)\\s*(\\{)",
+                    "beginCaptures": {
+                        "1": { 
+                            "name": "meta.directive.style.ptml",
+                            "patterns": [{ "include": "source.python" }] 
+                        },
+                        "2": { "name": "punctuation.section.block.begin.ptml" }
+                    },
+                    "end": "\\}",
+                    "endCaptures": {
+                        "0": { "name": "punctuation.section.block.end.ptml" }
+                    },
+                    "patterns": [
+                        { "include": "source.css" }
+                    ]
+                },
+                {
+                    "match": "(@style(?:\\([^)]*\\))?)",
+                    "name": "meta.directive.style.ptml",
+                    "captures": {
+                        "1": { "patterns": [{ "include": "source.python" }] }
+                    }
+                }
+            ]
+        }
+    }
+}

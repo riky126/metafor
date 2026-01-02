@@ -1,0 +1,69 @@
+site_name: Metafor
+site_description: The framework for web and native user interfaces with Python
+site_author: Metafor Team
+repo_url: https://github.com/yourusername/metafor
+repo_name: metafor
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  favicon: assets/metafor-logo.svg
+  palette:
+    - scheme: default
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.annotate
+    - content.code.copy
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - GET STARTED:
+    - Quick Start:
+      - quick-start/index.md
+      - Quick Guide: quick-guide.md
+      - Thinking in Metafor: thinking-in-metafor.md
+    - Installation: installation.md
+    - Setup: setup.md
+    - Metafor Compiler: compiler.md
+  - LEARN METAFOR:
+    - Describing the UI: describing-ui.md
+    - Adding Interactivity: adding-interactivity.md
+    - Managing State: managing-state.md
+    - Escape Hatches: escape-hatches.md
+  - API REFERENCE:
+    - Overview: api-reference.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - admonition
+  - pymdownx.details
+  - attr_list
+
+extra_css:
+  - assets/custom.css
+
+extra_javascript:
+  - assets/search-bar.js
+
+plugins:
+  - search
+

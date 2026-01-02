@@ -1,0 +1,93 @@
+.login-page { }
+
+.inner-page {
+  height: 100vh;
+  margin: 0;
+  display: flex;
+  padding: 0rem;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+}
+  
+.login-container {
+  width: 480px;
+  padding: 1.6rem 3rem;
+  border-radius: 16px;
+  box-shadow: 0 4px 26px rgba(0, 0, 0, 0.04);
+  background-color: #fff;
+  border: 1px solid #efeff2;
+}
+
+.login-container h2 {
+  margin-bottom: 32px;
+  margin-top: 14px;
+  font-size: 1.6rem;
+  text-align: center;
+  font-weight: 700;
+  color: #323135;
+}
+  
+sl-input, sl-button {
+  margin-bottom: 15px;
+  width: 100%;
+}
+
+sl-input::part(base) {
+  height: 2.85rem;
+}
+
+sl-icon {
+  opacity: 0.5;
+}
+
+sl-button {
+  margin-top: 1.5rem;
+}
+  
+sl-button::part(base) {
+  --sl-button-padding-top: 10px;
+  --sl-button-padding-bottom: 10px;
+  font-size: 1.125rem;
+  font-weight: 700;
+  background-color: #b05dc4;
+  border-color: #b05dc4;
+  color: #4c1259;
+  transition: all 0.4s;
+}
+
+sl-button:hover::part(base) {
+  background-color: #a848c0;
+  border-color: #a848c0;
+}
+
+.ip-holder {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.6rem;
+}
+
+a {
+  font-weight: 300;
+  font-size: 0.9rem;
+  width: auto;
+  margin: auto;
+}
+
+.logo-holder {
+  display: flex;
+}
+
+.logo {
+  width: 3rem;
+  margin: 0 auto 2rem auto;
+  display: inline-block;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
+
+.error-msg {
+  color: #ee410d;
+  font-size: 0.9rem;
+}

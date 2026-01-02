@@ -1,0 +1,64 @@
+@component("TopbarMenu") @props {
+    from js import console
+    from metafor.router import  router_delegate
+    from metafor.hooks import create_memo, use_context
+    from contexts import DBContext, ThemeContext
+
+    router = router_delegate()
+
+    my_ref = {}
+
+    theme = use_context(ThemeContext)
+    theme_icon = create_memo(lambda: "sun" if theme() == "dark" else "moon")
+
+    def on_menu_select(event):
+        match event.detail.item.value:
+            case "profile":
+                router.go("/profile", {"name": "John"})
+            case "settings":
+                router.go("/settings")
+            case _:
+                router.go("/login")
+
+    def toggle_theme(event):
+        console.log(my_ref['current'])
+
+        if theme() == "light":
+            ThemeContext.set_value("dark")
+        else:
+            ThemeContext.set_value("light")
+}
+
+@ptml {
+    <div className="dropdown-hoist">
+        <sl-icon-button ref=@{my_ref} name=@{lambda: theme_icon()} className="theme-switcher" onclick=@{toggle_theme} />
+        <span className="user-name">Hi Ricardo!</span>
+        <sl-dropdown hoist="">
+            <sl-icon-button slot="trigger" slot="trigger" name="person-circle" className="menu-trigger" />
+            
+            <sl-menu onsl-select=@{on_menu_select}>
+                <sl-menu-item value="profile">
+                    Profile
+                    <sl-icon name="person-badge" slot="prefix" />
+                </sl-menu-item>
+                <sl-menu-item value="settings">
+                    Settings
+                    <sl-icon name="gear" slot="prefix" />
+                </sl-menu-item>
+                <sl-divider></sl-divider>
+                <sl-menu-item value="logout">
+                    Logout
+                    <sl-icon name="box-arrow-right" slot="prefix" />
+                </sl-menu-item>
+            </sl-menu>
+        </sl-dropdown>
+    </div>
+}
+
+
+@style {
+    .user-name {
+        position: relative;
+        top: -0.2rem;
+    }
+}

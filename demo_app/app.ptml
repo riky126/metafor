@@ -1,0 +1,72 @@
+@component("MyApp") @props {
+    from js import console, Object
+    from pyodide.ffi import to_js
+    from metafor.core import create_signal
+    from metafor.hooks import use_context
+    from contexts import ThemeContext, DBContext
+    from routes import router
+    from metafor.storage import index_db
+    
+    theme = use_context(ThemeContext)    
+    count, set_count = create_signal(0)
+
+    db_api = None
+
+    def setup_schema(session):
+        console.log("Running schema setup for version:", session.DB.version)
+        try:
+            # Log and delete existing stores
+            console.log("Existing stores before setup:", list(session.DB.objectStoreNames))
+
+            # Create stores with explicit configuration
+            options = {"keyPath": "id", "autoIncrement": True}
+            my_store_index, my_store = db_api.create_store("myStore", options)
+            
+            user_store, _ = db_api.create_store("users", options)
+            user_store("name", options={"unique": False})
+            user_store("email", options={"unique": True})
+            
+            console.log("Schema setup completed successfully")
+        except Exception as e:
+            console.error("Schema setup error:", str(e))
+
+    async def on_connect(DB):
+        DBContext.set_value(DB)
+        try:            
+            # Check if user exists first to avoid ConstraintError logs
+            existing_user = await DB.get_by_index("users", "email", "halem@mail.com")
+            
+            if not existing_user:
+                user = await DB.create("users", {"name": "Nehalem Doe", "email": "halem@mail.com"})
+                print("Created user:", user)
+            else:
+                console.log("User 'halem@mail.com' already exists.")
+            
+        except Exception as e:
+            console.error("Connection error:", str(e))
+
+    # Use a higher version to force schema update
+    db_api = index_db("MyApp", on_connected=on_connect, on_upgrade=setup_schema, version=1)  # Increased version
+
+    def increment():
+        set_count(count() + 1)
+
+    def decrement():
+        set_count(count() - 1)
+
+} <- @context(ThemeContext) @App {
+    from contexts import ThemeContext
+    @value theme = "light"
+}
+
+@ptml {
+     <div className=@{lambda: f'app theme-{theme()}'}>
+
+        @{router.route_outlet()}
+
+        <div id="telepot-outlet"></div>
+        
+    </div>
+}
+
+@style(src="assets/app.css", scope="global")

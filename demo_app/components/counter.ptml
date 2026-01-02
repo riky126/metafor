@@ -1,0 +1,127 @@
+@page("/counter", "Counter") @props {
+    # Import the framework
+    from js import console
+
+    from metafor.core import create_effect, create_signal, after_update, before_update, on_dispose, on_mount
+    from metafor.hooks import create_memo, use_context, use_provider
+    from metafor.components import For, Portal, Show
+    from metafor.dom import t
+    from metafor.core import batch_updates
+    from metafor.decorators import component, page
+    from contexts import ThemeContext
+    from app_state import container, counter_provider
+
+    @t{<page-title>Counter Test</page-title>}
+
+    @prop count: int = 1
+
+    theme = use_context(ThemeContext)
+    test, set_test = create_signal("test")
+    count, set_count = create_signal(props.get("count", 0))
+
+    count_value, set_count_provider = use_provider(container, counter_provider)
+  
+    def my_batch():
+        # Use a temporary variable to hold the current count.
+        current_count = count()
+        
+        batch_updates(lambda: [
+            set_count(current_count + 1),
+            set_count(current_count + 2),
+            set_count(current_count + 3),
+            set_test('ontest')
+        ])
+    
+    def increment(evt):
+        set_count(count() + 1)
+        set_count_provider(count_value() + 1)
+    
+    def decrement(evt):
+        set_count(count() - 1)
+        
+    def on_batch_update(evt):
+        evt.preventDefault()
+        my_batch()
+    
+    doubled = create_memo(lambda: count() * 2)
+
+    # --- Lifecycle Hooks ---
+
+    # on_mount (executed when the component is added to the DOM)
+    def on_mounted():
+        print("Counter component mounted")
+
+    on_mount(on_mounted)
+
+    # before_update (executed before any attribute or text content updates)
+    before_update([count, test], lambda *args: print("Counter component is about to update!"))
+
+    # after_update (executed after any attribute or text content updates)
+    after_update(count, lambda: print("Counter component after_update!"))
+
+    # on_dispose (executed when the component is removed from the DOM)
+    def dispose_counter():
+        print("Counter component disposed!")
+
+    on_dispose(dispose_counter)
+}
+
+@ptml {
+    <div className=@{lambda: f"counter theme-{theme()}"}>
+        <h2>Counter</h2>
+        <h4 className="text-count">Count: @{count}</h4>
+        <p>Doubled: @{doubled}</p>
+        <button className="btn btn-primary btn-count" onclick=@{increment}>+</button>
+        <span className="space"/>
+        <button className="btn btn-primary btn-count" onclick=@{decrement}>-</button>
+        <div>
+            <a className="btn btn-link" onclick=@{on_batch_update}>Batch Update</a>
+        </div>
+    </div>
+}
+
+@style (scope="global") {
+    .space {
+        margin: 10px;
+    }
+
+    .text-count {
+        color: #707070;
+    }
+
+    .btn-count {
+        border: 1px solid #dbdadb;
+        color: #3d3d3d;
+        padding: 5px 10px;
+        border-radius: 8px;
+        width: 50px;
+        font-size: 18px;
+        background-color: transparent;
+    }
+
+    .theme-dark .btn-count {
+        color: #d1d1d1;
+        border-color: #d1d1d1;
+    }
+
+    .theme-dark .text-count {
+        color: #d1d1d1;
+    }
+
+    .btn-count:hover {
+        background-color: #4c0d5f;
+        color: #fff;
+    }
+
+    .btn-count:active {
+        background-color: #6b1385 !important;
+        color: #fff;
+    }
+
+    .btn-link {
+        margin-left: 0;
+        margin-top: 1rem;
+        text-decoration: none;
+        color: #4c0d5f;
+    }
+}

@@ -1,0 +1,12 @@
+name = "Metafor Tutorial"
+description = "Metafor - SolidJS-inspired PyScript Framework."
+debug = true
+packages = [ 
+    
+]
+
+[files]
+
+[js_modules]
+
+main = { }

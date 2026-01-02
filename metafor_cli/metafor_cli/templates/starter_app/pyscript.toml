@@ -1,0 +1,12 @@
+name = "[app_name]"
+description = "[app_description]"
+debug = true
+packages = [ 
+    
+]
+
+[files]
+
+[js_modules]
+
+main = { }

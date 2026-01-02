@@ -1,0 +1,14 @@
+name = 'demo_app'
+description = "A Metafor App"
+debug = true
+packages = [ 
+    
+]
+
+[files]
+"pages/login/login.css" = "login.css"
+"pages/dashboard/dashboard.css" = "dashboard.css"
+
+[js_modules]
+
+main = { }

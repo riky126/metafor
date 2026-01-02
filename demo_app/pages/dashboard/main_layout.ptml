@@ -1,0 +1,86 @@
+# Dashboard layout
+@page("/", "MainLayout") @props {
+    from metafor.router import  router_delegate
+    from components.tabbar_menu import TopbarMenu
+
+    class SidebarItem:
+        def __init__(self, label:str, icon:str, route:str):
+            self.label = label
+            self.icon = icon
+            self.route = route
+
+    sidebar_items = [
+        SidebarItem("Dashboard", "speedometer2", "/"),
+        SidebarItem("Todos", "list-check", "/todos/1"),
+        SidebarItem("Counter", "1-square", "/counter"),
+    ]
+
+    router = router_delegate()
+}
+
+@ptml {
+    <div className="container">
+        <div className="header">
+            <div>
+                <sl-button variant="text" className="menu-btn" >
+                    <img className="logo" src="assets/logo.svg" />
+                </sl-button>
+            </div>
+            <p>Metafor UI Framework</p>
+            <TopbarMenu @{**props}/>
+        </div>
+
+        <div className="sidebar" id="sidebar">
+            <div className="wc-sidebar-menu">
+                @foreach item in sidebar_items {
+                    <div key=@{item.route} className="wc-menu-item">
+                        <sl-button variant="text" className="sidebar-button sidemenu-btn" onclick=@{lambda event: router.go(item.route)}>
+                            <sl-icon name=@{item.icon} clasName="wc-btn-icon" /> &nbsp; @{item.label}
+                        </sl-button>
+                    </div>
+                }
+            </div>
+        </div>
+
+        # Route outlet will be children
+        <div className="main">
+            @{props.get("children")}
+        </div>
+        # End of children
+
+        <footer className="footer">
+            visit <a href="https://github.com/google-deepmind/metafor">metafor docs</a> to learn Metafor 
+        </footer>
+        
+    </div>
+}
+
+@style(src="dashboard.css", scope="global") {
+    .logo {
+        width: 2rem;
+        height: 2rem;
+    }
+
+    .wc-btn-icon {
+        font-size: 1.15rem;
+    }
+
+    .sidemenu-btn {
+        width: 100%;
+    }
+
+    sl-button.sidemenu-btn::part(base) {
+        border-radius: 0.4rem;
+        display: flex;
+        justify-content: start;
+    }   
+
+    sl-button.sidemenu-btn::part(base):hover{
+        background-color: #f5ecf8;
+    }
+
+    .sidemenu-btn.active-menu-item::part(base){
+        color: #7d079a;
+    }
+
+}

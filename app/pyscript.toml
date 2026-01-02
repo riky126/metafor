@@ -1,0 +1,74 @@
+name = "Metafor Tutorial"
+description = "Metafor - SolidJS-inspired PyScript Framework."
+debug = true
+packages = [ 
+    "./libs/beanstack-0.1.0-py3-none-any.whl"
+]
+
+[files]
+#assets
+"/assets/css/app.css" = "app.css"
+"/assets/css/dashboard.css" = "dashboard.css"
+"/jsx/counter.jsx" = "jsx/counter.jsx"
+
+#app
+"__init__.py" = "__init__.py"
+"app.py" = "app.py"
+"routes.py" = "routes.py"
+"components.py" = "components.py"
+"contexts.py" = "contexts.py"
+"services.py" = "services.py"
+"app_state.py" = "app_state.py"
+"interceptors.py" = "interceptors.py"
+"api_client.py" = "api_client.py"
+
+"pages/__init__.py" = "pages/__init__.py"
+
+"pages/login/login.py" = "pages/login/login.py"
+"pages/login/login.css" = "login.css"
+
+"pages/dashboard.py" = "pages/dashboard.py"
+"pages/settings.py" = "pages/settings.py"
+"pages/profile.py" = "pages/profile.py"
+
+"./store/__init__.py" = "store/__init__.py"
+"./store/auth.py" = "store/auth.py"
+"./store/counter.py" = "store/counter.py"
+
+
+#metafor
+"metafor/__init__.py" = "metafor/__init__.py"
+"metafor/core.py" = "metafor/core.py"
+"metafor/dom.py" = "metafor/dom.py"
+"metafor/decorators.py" = "metafor/decorators.py"
+"metafor/components.py" = "metafor/components.py"
+"metafor/router.py" = "metafor/router.py"
+"metafor/context.py" = "metafor/context.py"
+"metafor/hooks.py" = "metafor/hooks.py"
+"metafor/store.py" = "metafor/store.py"
+"metafor/storage.py" = "metafor/storage.py"
+"metafor/transpiler/__init__.py" = "metafor/transpiler/__init__.py"
+"metafor/transpiler/jsx_transpiler.py" = "metafor/transpiler/jsx_transpiler.py"
+"metafor/transpiler/tokenizer.py" = "metafor/transpiler/tokenizer.py"
+"metafor/transpiler/parser.py" = "metafor/transpiler/parser.py"
+"metafor/transpiler/code_generator.py" = "metafor/transpiler/code_generator.py"
+"metafor/exceptions.py" = "metafor/exceptions.py"
+
+"metafor/utils/__init__.py" = "metafor/utils/__init__.py"
+"metafor/utils/common.py" = "metafor/utils/common.py"
+"metafor/utils/async_task.py" = "metafor/utils/async_task.py"
+"metafor/utils/runtime.py" = "metafor/utils/runtime.py"
+
+"metafor/http/__init__.py" = "metafor/http/__init__.py"
+"metafor/http/client.py"   = "metafor/http/client.py"
+"metafor/http/cookie.py"   = "metafor/http/cookie.py"
+"metafor/http/support.py"   = "metafor/http/support.py"
+"metafor/http/exceptions.py"   = "metafor/http/exceptions.py"
+
+"metafor/form/__init__.py" = "metafor/form/__init__.py"
+"metafor/form/form.py"   = "metafor/form/form.py"
+"metafor/form/schema.py"   = "metafor/form/schema.py"
+"metafor/form/validator.py"   = "metafor/form/validator.py"
+
+[js_modules]
+main = { }

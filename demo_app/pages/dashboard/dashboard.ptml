@@ -1,0 +1,64 @@
+@page('', "Dashboard") @props {
+    from contexts import DBContext, ThemeContext
+    from metafor.hooks import create_memo, use_context, create_effect
+    from metafor.core import batch_updates, create_signal, on_dispose, on_mount
+    from metafor.utils import run_async
+    from services import fetch_account
+
+    theme = use_context(ThemeContext)
+    db_api = use_context(DBContext)
+
+    def mounted():
+        print("Dashboard Page mounted!")
+        run_async(
+            fetch_account
+        )
+        # print(db_api().DB)
+    
+    # on_mount (executed when the component is added to the DOM)
+    on_mount(mounted)
+
+    def dispose_home():
+        print("Dashboard Page disposed!")
+
+    # on_dispose (executed when the component is removed from the DOM)
+    on_dispose(dispose_home)
+
+    user_data, set_user_data = create_signal({
+        "name": "Alice",
+        "profile": {
+            "age": 30,
+            "roles": ["user"]
+        }
+    }, deep=True)
+
+    # Create an effect that will track changes
+    def user_effect():
+        print(f"User changed: {user_data()}")
+
+    create_effect(user_effect)
+    # These should now all trigger the effect:
+   
+    # These updates will now trigger the effect without changing references
+    def update_person(e):
+        print("Updating person...")
+        def update():
+            user_data()["name"] = "Bob"
+            user_data()["profile"]["age"] += 1
+            user_data()["profile"]["roles"].append("admin")
+
+        batch_updates(lambda: [
+            update()
+        ])
+}
+
+@ptml {
+    <div className="home" onclick=@{update_person}>
+        <div className=@{lambda: f'theme-{theme()}'}>
+            <h2>Dashboard Page</h2>
+            <p>Welcome to the home page!</p>
+
+            @{lambda: user_data()}
+        </div>
+    </div>
+}
