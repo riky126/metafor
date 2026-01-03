@@ -235,12 +235,16 @@ class Router:
         return False
 
     async def _can_access_route(self, path: str, params: Optional[Dict[str, str]] = None,
-                                query: Optional[Dict[str, str]] = None) -> Tuple[bool, Optional[str]]:
+                                query: Optional[Dict[str, str]] = None,
+                                matched_routes: Optional[List[Tuple[Route, Dict[str, str]]]] = None) -> Tuple[bool, Optional[str]]:
         """Check if the user can access the requested route using guards."""
         params = params or {}
         query = query or {}
 
-        matched_routes_with_params, _ = self._find_matching_route(path.lstrip('/'), self.routes)
+        if matched_routes is None:
+            matched_routes_with_params, _ = self._find_matching_route(path.lstrip('/'), self.routes)
+        else:
+            matched_routes_with_params = matched_routes
 
         if not matched_routes_with_params:
             return True, None  # No route found means no guard to check
@@ -284,7 +288,7 @@ class Router:
                         console.error(f"Invalid regex pattern in guard: {pattern}")
                         continue
                 else:
-                    clean_pattern = pattern.lstrip('^').rstrip('$')
+                    clean_pattern = pattern.lstrip('^').rstrip('$').lstrip('/')
                     pattern_matches = path.lstrip('/').startswith(clean_pattern) or path.lstrip('/') == clean_pattern
 
             if pattern_matches:
@@ -394,7 +398,7 @@ class Router:
 
         deepest_route, deepest_params = matched_routes_with_params[-1]
 
-        can_access, redirect_path = await self._can_access_route(path, deepest_params, query_params)
+        can_access, redirect_path = await self._can_access_route(path, deepest_params, query_params, matched_routes=matched_routes_with_params)
 
         if not can_access:
             batch_updates(lambda: [
@@ -511,7 +515,7 @@ class Router:
 
         deepest_route, deepest_params = matched_routes_with_params[-1]
 
-        can_access, redirect_path = await self._can_access_route(path, deepest_params, query_params)
+        can_access, redirect_path = await self._can_access_route(path, deepest_params, query_params, matched_routes=matched_routes_with_params)
 
         if not can_access:
             batch_updates(lambda: [
