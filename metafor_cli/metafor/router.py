@@ -8,6 +8,7 @@ from metafor.decorators import component
 from metafor.hooks import create_memo
 from metafor.dom import t
 import asyncio
+import time
 from inspect import iscoroutinefunction, iscoroutine
 from typing import Any, Dict, Tuple, Callable, Optional, Pattern, List
 
@@ -93,12 +94,13 @@ class Router:
         self.params_signal, self.set_params = create_signal({})
         self.query_signal, self.set_query = create_signal({})
 
-        self.current_route, self.set_current_route = create_signal(initial_route)
+        # current_route holds a dict with 'path' and 'ts' (timestamp) to support
+        # same-component re-renders while allowing Link to check path equality efficiently.
+        self.current_route, self.set_current_route = create_signal({"path": initial_route, "ts": time.time()})
         self.last_valid_route = None
 
         self.history_signal, self.set_history = create_signal(deque(maxlen=50))  # Use deque for efficient history
         self.current_history_index_signal, self.set_current_history_index = create_signal(-1)
-        self.force_update_signal, self.set_force_update = create_signal(0)
 
         # Set up different event listeners based on routing mode
         if self.mode == self.HASH_MODE:
@@ -413,7 +415,7 @@ class Router:
 
     def _set_route_without_navigation(self, path: str) -> None:
         """Update the current route without triggering navigation."""
-        self.set_current_route(path)
+        self.set_current_route({"path": path, "ts": time.time()})
         self.last_valid_route = path
 
     def _perform_redirect(self, path: str, query_params: Optional[Dict[str, str]] = None) -> None:
@@ -433,7 +435,7 @@ class Router:
             if query_parts:
                 query_string = f"?{'&'.join(query_parts)}"
 
-        self.set_current_route(path)
+        self.set_current_route({"path": path, "ts": time.time()})
 
         if self.mode == self.HASH_MODE:
             window.removeEventListener("hashchange", self._route_change_proxy)
@@ -497,9 +499,9 @@ class Router:
                        add_to_history: bool = True) -> bool:
         """Navigate to a new route."""
         # Skip if already on this route (no actual route change)
-        if path == self.last_valid_route:
-            self.set_force_update(self.force_update_signal() + 1)
-            # return True # Allow re-render even if same route
+        # Skip if already on this route (no actual route change)
+        # if path == self.last_valid_route:
+        #    return True 
         
         matched_routes_with_params, _ = self._find_matching_route(path.lstrip('/'), self.routes)
         if not matched_routes_with_params:
@@ -522,7 +524,7 @@ class Router:
         batch_updates(lambda: [
             self.set_params(deepest_params),
             self.set_query(query_params) if query_params else None,
-            self.set_current_route(path)
+            self.set_current_route({"path": path, "ts": time.time()})
         ])
 
         self.last_valid_route = path
@@ -704,14 +706,17 @@ class Router:
         asyncio.create_task(self.intialize())
 
         def render():
-            current_route = track(lambda: self.current_route())
-            # Track force update to trigger re-render on same route navigation
-            _ = track(lambda: self.force_update_signal())
+            current_route_state = track(lambda: self.current_route())
+            # current_route_state is a dict {"path": "...", "ts": ...}
+            # We track the whole object so any change (including just ts) triggers re-render
+            path = current_route_state["path"]
             query_params = track(lambda: self.query_signal())
 
-            path = current_route or self.last_valid_route
             if path is None:
                 path, _ = self._get_current_path()
+            else:
+                 # Fallback if path is empty/none from state, use last valid
+                 path = path or self.last_valid_route
 
             def render_route_hierarchy(routes_with_params: List[Tuple[Route, Dict[str, str]]],
                                     remaining_path: str = None):
@@ -747,7 +752,7 @@ class Router:
 
             matched_routes, remaining_path = self._find_matching_route(path.lstrip('/'), self.routes)
 
-            if matched_routes and current_route is not None:
+            if matched_routes and path is not None:
                 return render_route_hierarchy(matched_routes, remaining_path)
 
             return NotFound()
@@ -778,10 +783,13 @@ class Router:
         def Link(**props):
             is_active = False
 
+            current_route_state = self.current_route()
+            current_path = current_route_state["path"] if isinstance(current_route_state, dict) else current_route_state
+
             if exact_match:
-                is_active = self.current_route() == path
+                is_active = current_path == path
             else:
-                is_active = self.current_route().startswith(path)
+                is_active = current_path.startswith(path)
 
             attributes = {"href": href, "onclick": onclick_proxy}
             if active_class and is_active:
