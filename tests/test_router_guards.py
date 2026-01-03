@@ -65,7 +65,33 @@ class TestRouterGuards(unittest.IsolatedAsyncioTestCase):
         success = await router.navigate("/admin")
         self.assertFalse(success)
         # Should redirect to /login
+        # Should redirect to /login
         self.assertEqual(router.current_route()["path"], "/login")
+
+    async def test_guard_path_params_resolution(self):
+        def UserComponent(**props): return "User"
+        UserComponent.__path__ = "/users/:id"
+        
+        routes = [Route(component=UserComponent)]
+        
+        captured_to_path = None
+        
+        async def check_path_guard(prev, curr, **params):
+            nonlocal captured_to_path
+            captured_to_path = curr.path
+            return True
+            
+        router = Router(routes, initial_route="/")
+        router.add_guard("/users/:id", check_path_guard, "/")
+        
+        router._set_route_without_navigation("/")
+        
+        # Navigate to a path with params
+        await router.navigate("/users/123")
+        
+        # The path in the route object passed to guard should be resolved (/users/123)
+        # NOT the pattern (/users/:id)
+        self.assertEqual(captured_to_path, "/users/123")
 
 if __name__ == '__main__':
     unittest.main()

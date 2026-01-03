@@ -4,7 +4,7 @@ from services import fetch_user
 
 async def is_user_logged_in(from_route, to_route, **kwargs):
     # await asyncio.sleep(0)
-    print(f"From route: {to_route.meta}")
+    print(f"From route: {from_route.path}")
     print(f"To route: {to_route.path}")
 
     if not to_route.meta.get("requires_auth", False):

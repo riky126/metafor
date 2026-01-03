@@ -250,18 +250,20 @@ class Router:
             return True, None  # No route found means no guard to check
 
         prev_path = self.last_valid_route or "/"
+        
+        # We need the previous route object for the guard function
         prev_path_normalized = prev_path.lstrip('/')
         prev_matched_routes, _ = self._find_matching_route(prev_path_normalized, self.routes)
         prev_route_obj = prev_matched_routes[-1][0] if prev_matched_routes else None
-        prev_route_path_str = self._get_route_actual_path(prev_route_obj)
-        if not prev_route_path_str:
-            prev_route_path_str = prev_path
 
-        # Get the deepest route and its actual path for guard execution
+        # Get the deepest route for guard execution
         deepest_route = matched_routes_with_params[-1][0] if matched_routes_with_params else None
-        deepest_route_path_str = self._get_route_actual_path(deepest_route)
-        if not deepest_route_path_str:
-            deepest_route_path_str = path
+        
+        
+        # Use provided path as the actual path (it's already resolved with params)
+        deepest_route_path_str = path
+        prev_route_path_str = prev_path
+
         all_params = {**params, **matched_routes_with_params[-1][1]} if matched_routes_with_params else params
 
         # Track which guards have been executed to avoid duplicate calls
@@ -302,11 +304,11 @@ class Router:
                 
                 if from_route:
                     original_from_path = from_route.path
-                    from_route.path = prev_route_path_str or "/"
+                    from_route.path = prev_route_path_str
                 
                 if to_route:
                     original_to_path = to_route.path
-                    to_route.path = deepest_route_path_str or path
+                    to_route.path = deepest_route_path_str
                 
                 guard_result = await self._execute_guard(guard_fn, from_route, to_route, all_params, query)
                 executed_guards.add(id(guard_fn))
@@ -338,11 +340,11 @@ class Router:
                     
                     if from_route:
                         original_from_path = from_route.path
-                        from_route.path = prev_route_path_str or "/"
+                        from_route.path = prev_route_path_str
                     
                     if to_route:
                         original_to_path = to_route.path
-                        to_route.path = deepest_route_path_str or path
+                        to_route.path = deepest_route_path_str
                     
                     guard_result = await self._execute_guard(guard_fn, from_route, to_route, all_params, query)
                     executed_guards.add(id(guard_fn))

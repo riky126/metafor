@@ -3,6 +3,10 @@
     from metafor.router import  router_delegate
     from metafor.hooks import create_memo, use_context
     from contexts import DBContext, ThemeContext
+    from app_state import container, app_provider
+    from metafor.hooks import use_provider
+    
+    app_state, set_appstate = use_provider(container, app_provider)
 
     router = router_delegate()
 
@@ -18,6 +22,7 @@
             case "settings":
                 router.go("/settings")
             case _:
+                set_appstate({"auth_user": None})
                 router.go("/login")
 
     def toggle_theme(event):

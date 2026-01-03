@@ -17,6 +17,7 @@ from routes import router
 
 async def is_user_logged_in(from_route, to_route, **kwargs):
     # await asyncio.sleep(0)
+    
     if not from_route.meta.get("requires_auth", False):
         print("From route doesn't requires auth")
         return False
