@@ -98,6 +98,7 @@ class Router:
 
         self.history_signal, self.set_history = create_signal(deque(maxlen=50))  # Use deque for efficient history
         self.current_history_index_signal, self.set_current_history_index = create_signal(-1)
+        self.force_update_signal, self.set_force_update = create_signal(0)
 
         # Set up different event listeners based on routing mode
         if self.mode == self.HASH_MODE:
@@ -246,13 +247,15 @@ class Router:
         prev_path_normalized = prev_path.lstrip('/')
         prev_matched_routes, _ = self._find_matching_route(prev_path_normalized, self.routes)
         prev_route_obj = prev_matched_routes[-1][0] if prev_matched_routes else None
-        # Use the resolved path (with parameters filled in) instead of route pattern
-        prev_route_path_str = prev_path
+        prev_route_path_str = self._get_route_actual_path(prev_route_obj)
+        if not prev_route_path_str:
+            prev_route_path_str = prev_path
 
-        # Get the deepest route - use the resolved path (with parameters filled in) instead of route pattern
+        # Get the deepest route and its actual path for guard execution
         deepest_route = matched_routes_with_params[-1][0] if matched_routes_with_params else None
-        # Use the actual resolved path (e.g., '/todos/1') instead of route pattern (e.g., '/todos/:id?')
-        deepest_route_path_str = path
+        deepest_route_path_str = self._get_route_actual_path(deepest_route)
+        if not deepest_route_path_str:
+            deepest_route_path_str = path
         all_params = {**params, **matched_routes_with_params[-1][1]} if matched_routes_with_params else params
 
         # Track which guards have been executed to avoid duplicate calls
@@ -495,7 +498,8 @@ class Router:
         """Navigate to a new route."""
         # Skip if already on this route (no actual route change)
         if path == self.last_valid_route:
-            return True
+            self.set_force_update(self.force_update_signal() + 1)
+            # return True # Allow re-render even if same route
         
         matched_routes_with_params, _ = self._find_matching_route(path.lstrip('/'), self.routes)
         if not matched_routes_with_params:
@@ -701,6 +705,8 @@ class Router:
 
         def render():
             current_route = track(lambda: self.current_route())
+            # Track force update to trigger re-render on same route navigation
+            _ = track(lambda: self.force_update_signal())
             query_params = track(lambda: self.query_signal())
 
             path = current_route or self.last_valid_route

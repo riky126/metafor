@@ -98,6 +98,7 @@ class Router:
 
         self.history_signal, self.set_history = create_signal(deque(maxlen=50))  # Use deque for efficient history
         self.current_history_index_signal, self.set_current_history_index = create_signal(-1)
+        self.force_update_signal, self.set_force_update = create_signal(0)
 
         # Set up different event listeners based on routing mode
         if self.mode == self.HASH_MODE:
@@ -497,7 +498,8 @@ class Router:
         """Navigate to a new route."""
         # Skip if already on this route (no actual route change)
         if path == self.last_valid_route:
-            return True
+            self.set_force_update(self.force_update_signal() + 1)
+            # return True # Allow re-render even if same route
         
         matched_routes_with_params, _ = self._find_matching_route(path.lstrip('/'), self.routes)
         if not matched_routes_with_params:
@@ -703,6 +705,8 @@ class Router:
 
         def render():
             current_route = track(lambda: self.current_route())
+            # Track force update to trigger re-render on same route navigation
+            _ = track(lambda: self.force_update_signal())
             query_params = track(lambda: self.query_signal())
 
             path = current_route or self.last_valid_route
