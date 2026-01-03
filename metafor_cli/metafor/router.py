@@ -180,6 +180,62 @@ class Router:
 
             return path, window.location.search.lstrip("?")
 
+    def _get_route_actual_path(self, route: Route) -> Optional[str]:
+        """Get the actual path string from a Route object."""
+        try:
+            actual_path = route.component.__path__
+            # Return None if path is empty string, so fallback logic works
+            return actual_path if actual_path else None
+        except:
+            return None
+
+    def _is_route_under_guarded_route(self, guarded_pattern: str, matched_routes_with_params: List[Tuple[Route, Dict[str, str]]]) -> bool:
+        """Check if the matched routes are under the guarded route."""
+        # Find the route that matches the guard pattern
+        guarded_route = None
+        for pattern, route in self.routes.items():
+            pattern_str = str(pattern.pattern)
+            if pattern_str == guarded_pattern:
+                guarded_route = route
+                break
+        
+        if not guarded_route:
+            return False
+        
+        # Check if any of the matched routes is the guarded route or its descendant
+        for route, _ in matched_routes_with_params:
+            if route == guarded_route:
+                return True
+            # Check if route is a descendant by checking if guarded_route has children
+            # and if any matched route is in the hierarchy starting from guarded_route
+            if self._is_descendant(route, guarded_route):
+                return True
+        
+        return False
+
+    def _is_descendant(self, route: Route, ancestor: Route) -> bool:
+        """Check if route is a descendant of ancestor by traversing children."""
+        if not ancestor.children:
+            return False
+        
+        # Check direct children
+        for child_regex, child_route in ancestor.children.items():
+            if child_route == route:
+                return True
+            # Recursively check grandchildren
+            if self._is_descendant(route, child_route):
+                return True
+        
+        return False
+
+    def _should_apply_guards(self, matched_routes_with_params: List[Tuple[Route, Dict[str, str]]]) -> bool:
+        """Check if guards should be applied based on route metadata."""
+        # Check if any parent route has requires_auth in meta
+        for route, _ in matched_routes_with_params:
+            if route.meta.get("requires_auth", False):
+                return True
+        return False
+
     async def _can_access_route(self, path: str, params: Optional[Dict[str, str]] = None,
                                 query: Optional[Dict[str, str]] = None) -> Tuple[bool, Optional[str]]:
         """Check if the user can access the requested route using guards."""
@@ -191,43 +247,122 @@ class Router:
         if not matched_routes_with_params:
             return True, None  # No route found means no guard to check
 
+        # Check if guards should be applied based on route metadata
+        if not self._should_apply_guards(matched_routes_with_params):
+            return True, None
+
         prev_path = self.last_valid_route or "/"
         prev_path_normalized = prev_path.lstrip('/')
         prev_matched_routes, _ = self._find_matching_route(prev_path_normalized, self.routes)
-        prev_route = prev_matched_routes[-1][0] if prev_matched_routes else None
+        prev_route_obj = prev_matched_routes[-1][0] if prev_matched_routes else None
+        prev_route_path_str = self._get_route_actual_path(prev_route_obj)
+        if not prev_route_path_str:
+            prev_route_path_str = prev_path
 
-        # Check guards for the deepest matched route and its parents
-        for route, route_params in matched_routes_with_params:
-            all_params = {**params, **route_params}
+        # Get the deepest route and its actual path for guard execution
+        deepest_route = matched_routes_with_params[-1][0] if matched_routes_with_params else None
+        deepest_route_path_str = self._get_route_actual_path(deepest_route)
+        if not deepest_route_path_str:
+            deepest_route_path_str = path
+        all_params = {**params, **matched_routes_with_params[-1][1]} if matched_routes_with_params else params
 
-            # Check for exact path guards first
-            exact_guard_key = getattr(route, 'path', None)
-            if exact_guard_key and exact_guard_key in self.guards:
-                guard_fn, redirect = self.guards[exact_guard_key]
-                if not await self._execute_guard(guard_fn, prev_route, route, all_params, query):
-                    return False, redirect
-
-        # Check pattern-based guards for route groups and nested routes
+        # Track which guards have been executed to avoid duplicate calls
+        executed_guards = set()
+        
+        # Check pattern-based guards first (these apply to route groups and nested routes)
         for pattern, (guard_fn, redirect) in self.guards.items():
-            if pattern in [getattr(route, 'path', None) for route, _ in matched_routes_with_params]:
+            # Skip if this guard was already executed
+            if id(guard_fn) in executed_guards:
                 continue
-
-            pattern_is_regex = pattern.startswith('^') or pattern.startswith('.*')
+                
             pattern_matches = False
-            if pattern_is_regex:
-                try:
-                    pattern_matches = re.search(pattern, path.lstrip('/')) is not None
-                except re.error:
-                    console.error(f"Invalid regex pattern in guard: {pattern}")
-                    continue
+            
+            # Special case: "^$" pattern (empty path) means match routes under "/"
+            if pattern == "^$":
+                # Only match if the route is under the "/" route (MainLayout)
+                pattern_matches = self._is_route_under_guarded_route("^$", matched_routes_with_params)
             else:
-                clean_pattern = pattern.lstrip('^').rstrip('$')
-                pattern_matches = path.lstrip('/').startswith(clean_pattern) or path.lstrip('/') == clean_pattern
+                pattern_is_regex = pattern.startswith('^') or pattern.startswith('.*')
+                if pattern_is_regex:
+                    try:
+                        pattern_matches = re.search(pattern, path.lstrip('/')) is not None
+                    except re.error:
+                        console.error(f"Invalid regex pattern in guard: {pattern}")
+                        continue
+                else:
+                    clean_pattern = pattern.lstrip('^').rstrip('$')
+                    pattern_matches = path.lstrip('/').startswith(clean_pattern) or path.lstrip('/') == clean_pattern
 
             if pattern_matches:
-                deepest_route = matched_routes_with_params[-1][0] if matched_routes_with_params else None
-                if not await self._execute_guard(guard_fn, prev_route, deepest_route, params, query):
+                # Use original route objects but update their path attribute temporarily
+                from_route = prev_route_obj if prev_route_obj else None
+                to_route = deepest_route if deepest_route else None
+                
+                # Store original paths and update with actual path strings
+                original_from_path = None
+                original_to_path = None
+                
+                if from_route and hasattr(from_route, 'path'):
+                    original_from_path = from_route.path
+                    from_route.path = prev_route_path_str or "/"
+                elif not from_route:
+                    from_route = type('RouteObj', (), {'path': prev_route_path_str or "/"})()
+                
+                if to_route and hasattr(to_route, 'path'):
+                    original_to_path = to_route.path
+                    to_route.path = deepest_route_path_str or path
+                elif not to_route:
+                    to_route = type('RouteObj', (), {'path': deepest_route_path_str or path})()
+                
+                guard_result = await self._execute_guard(guard_fn, from_route, to_route, all_params, query)
+                executed_guards.add(id(guard_fn))
+                
+                # Restore original paths
+                if original_from_path is not None:
+                    from_route.path = original_from_path
+                if original_to_path is not None:
+                    to_route.path = original_to_path
+                
+                if not guard_result:
                     return False, redirect
+
+        # Check exact path guards for the deepest route only (only if not already executed as pattern guard)
+        if deepest_route:
+            exact_guard_key = getattr(deepest_route, 'path', None)
+            if exact_guard_key and exact_guard_key in self.guards:
+                guard_fn, redirect = self.guards[exact_guard_key]
+                
+                # Skip if this guard was already executed
+                if id(guard_fn) not in executed_guards:
+                    # Use original route objects but update their path attribute temporarily
+                    from_route = prev_route_obj if prev_route_obj else None
+                    to_route = deepest_route
+                    
+                    # Store original paths and update with actual path strings
+                    original_from_path = None
+                    original_to_path = None
+                    
+                    if from_route and hasattr(from_route, 'path'):
+                        original_from_path = from_route.path
+                        from_route.path = prev_route_path_str or "/"
+                    elif not from_route:
+                        from_route = type('RouteObj', (), {'path': prev_route_path_str or "/"})()
+                    
+                    if to_route and hasattr(to_route, 'path'):
+                        original_to_path = to_route.path
+                        to_route.path = deepest_route_path_str or path
+                    
+                    guard_result = await self._execute_guard(guard_fn, from_route, to_route, all_params, query)
+                    executed_guards.add(id(guard_fn))
+                    
+                    # Restore original paths
+                    if original_from_path is not None:
+                        from_route.path = original_from_path
+                    if original_to_path is not None:
+                        to_route.path = original_to_path
+                    
+                    if not guard_result:
+                        return False, redirect
 
         return True, None
 
@@ -255,6 +390,10 @@ class Router:
         """Unified handler for route changes."""
         path, query_string = self._get_current_path()
         query_params = self._parse_query_parameters(query_string)
+
+        # Skip if already on this route (no actual route change)
+        if path == self.last_valid_route:
+            return
 
         matched_routes_with_params, _ = self._find_matching_route(path.lstrip('/'), self.routes)
 
@@ -371,6 +510,10 @@ class Router:
     async def navigate(self, path: str, query_params: Optional[Dict[str, str]] = None,
                        add_to_history: bool = True) -> bool:
         """Navigate to a new route."""
+        # Skip if already on this route (no actual route change)
+        if path == self.last_valid_route:
+            return True
+        
         matched_routes_with_params, _ = self._find_matching_route(path.lstrip('/'), self.routes)
         if not matched_routes_with_params:
             console.warn(f"No route matched for navigation to: {path}")
@@ -474,6 +617,9 @@ class Router:
         """Add a guard for a specific route pattern."""
         if path_pattern.startswith('^') and path_pattern.endswith('$'):
             self.guards[path_pattern] = (guard_fn, redirect_path)
+        elif path_pattern == "/":
+            # Special case: "/" should guard all routes (will be handled specially in _can_access_route)
+            self.guards["^$"] = (guard_fn, redirect_path)
         elif path_pattern.endswith('*'):
             base_pattern = path_pattern[:-1]
             regex_path = f"^{re.escape(base_pattern.lstrip('/'))}"

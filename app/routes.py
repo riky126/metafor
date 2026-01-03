@@ -15,7 +15,8 @@ routes = [
         Route(ProfileLayout, children=[
             Route(Profile),
         ])
-    ]), 
+    ]),
+    # Route(Counter, meta={"requires_auth": True}, page_title="test"),
 
     Route(Login, page_title="Login")
 ]

@@ -58,6 +58,8 @@ packages = [
 "metafor/utils/common.py" = "metafor/utils/common.py"
 "metafor/utils/async_task.py" = "metafor/utils/async_task.py"
 "metafor/utils/runtime.py" = "metafor/utils/runtime.py"
+"metafor/utils/ref.py" = "metafor/utils/ref.py"
+"metafor/utils/html.py" = "metafor/utils/html.py"
 
 "metafor/http/__init__.py" = "metafor/http/__init__.py"
 "metafor/http/client.py"   = "metafor/http/client.py"

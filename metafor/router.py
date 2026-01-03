@@ -65,6 +65,9 @@ class Route:
             except:
                 raise Exception("'path' argument is required for page component, ensure @page('som_path') decorator called with path.")
 
+            # Merge parent meta into child meta (parent meta first, child meta can override)
+            route.meta = {**self.meta, **route.meta}
+            
             normalized_path = child_path.lstrip('/')
             regex_path, regex_compiled = _str_to_regex_path(normalized_path)
             route.path = regex_path
@@ -228,14 +231,6 @@ class Router:
         
         return False
 
-    def _should_apply_guards(self, matched_routes_with_params: List[Tuple[Route, Dict[str, str]]]) -> bool:
-        """Check if guards should be applied based on route metadata."""
-        # Check if any parent route has requires_auth in meta
-        for route, _ in matched_routes_with_params:
-            if route.meta.get("requires_auth", False):
-                return True
-        return False
-
     async def _can_access_route(self, path: str, params: Optional[Dict[str, str]] = None,
                                 query: Optional[Dict[str, str]] = None) -> Tuple[bool, Optional[str]]:
         """Check if the user can access the requested route using guards."""
@@ -246,10 +241,6 @@ class Router:
 
         if not matched_routes_with_params:
             return True, None  # No route found means no guard to check
-
-        # Check if guards should be applied based on route metadata
-        if not self._should_apply_guards(matched_routes_with_params):
-            return True, None
 
         prev_path = self.last_valid_route or "/"
         prev_path_normalized = prev_path.lstrip('/')
@@ -294,25 +285,21 @@ class Router:
                     pattern_matches = path.lstrip('/').startswith(clean_pattern) or path.lstrip('/') == clean_pattern
 
             if pattern_matches:
-                # Use original route objects but update their path attribute temporarily
-                from_route = prev_route_obj if prev_route_obj else None
-                to_route = deepest_route if deepest_route else None
+                # Use original route objects and update their path attribute temporarily
+                from_route = prev_route_obj
+                to_route = deepest_route
                 
                 # Store original paths and update with actual path strings
                 original_from_path = None
                 original_to_path = None
                 
-                if from_route and hasattr(from_route, 'path'):
+                if from_route:
                     original_from_path = from_route.path
                     from_route.path = prev_route_path_str or "/"
-                elif not from_route:
-                    from_route = type('RouteObj', (), {'path': prev_route_path_str or "/"})()
                 
-                if to_route and hasattr(to_route, 'path'):
+                if to_route:
                     original_to_path = to_route.path
                     to_route.path = deepest_route_path_str or path
-                elif not to_route:
-                    to_route = type('RouteObj', (), {'path': deepest_route_path_str or path})()
                 
                 guard_result = await self._execute_guard(guard_fn, from_route, to_route, all_params, query)
                 executed_guards.add(id(guard_fn))
@@ -334,21 +321,19 @@ class Router:
                 
                 # Skip if this guard was already executed
                 if id(guard_fn) not in executed_guards:
-                    # Use original route objects but update their path attribute temporarily
-                    from_route = prev_route_obj if prev_route_obj else None
+                    # Use original route objects and update their path attribute temporarily
+                    from_route = prev_route_obj
                     to_route = deepest_route
                     
                     # Store original paths and update with actual path strings
                     original_from_path = None
                     original_to_path = None
                     
-                    if from_route and hasattr(from_route, 'path'):
+                    if from_route:
                         original_from_path = from_route.path
                         from_route.path = prev_route_path_str or "/"
-                    elif not from_route:
-                        from_route = type('RouteObj', (), {'path': prev_route_path_str or "/"})()
                     
-                    if to_route and hasattr(to_route, 'path'):
+                    if to_route:
                         original_to_path = to_route.path
                         to_route.path = deepest_route_path_str or path
                     
