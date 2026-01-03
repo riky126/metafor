@@ -62,7 +62,7 @@
           event.preventDefault()
           form.handle_submit(submit_form)
 
-     show_error = create_memo(lambda:  auth_error()[0].upper() + auth_error()[1:] if auth_error() else '') 
+     show_error = create_memo(lambda: auth_error()[0].upper() + auth_error()[1:] if auth_error() else '') 
 }
 
 @ptml {

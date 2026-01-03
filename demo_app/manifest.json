@@ -5,7 +5,7 @@
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
-  "theme_color": "#007bff",
+  "theme_color": "#ffffff",
   "orientation": "portrait-primary",
   "icons": [
     {
@@ -20,10 +20,6 @@
       "purpose": "any maskable"
     }
   ],
-  "categories": [],
-  "screenshots": [],
-  "shortcuts": [],
-  "share_target": null,
   "prefer_related_applications": false
 }
 

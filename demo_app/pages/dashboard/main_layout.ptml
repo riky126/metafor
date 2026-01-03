@@ -1,6 +1,6 @@
 # Dashboard layout
 @page("/", "MainLayout") @props {
-    from metafor.router import  router_delegate
+    from metafor.router import router_delegate
     from components.tabbar_menu import TopbarMenu
 
     class SidebarItem:

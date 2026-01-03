@@ -42,22 +42,15 @@
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/serviceWorker.js')
-                    .then((registration) => {
-                        console.log('Service Worker registered successfully:', registration.scope);
-                        
-                        // Check for updates periodically
-                        setInterval(() => {
-                            registration.update();
-                        }, 60000); // Check every minute
+                navigator.serviceWorker.register('serviceWorker.js')
+                    .then(registration => {
+                        document.addEventListener('visibilitychange', () => {
+                            if (!document.hidden) registration.update();
+                        });
                     })
-                    .catch((error) => {
-                        console.log('Service Worker registration failed:', error);
-                    });
+                    .catch(error => console.error('Service Worker registration failed:', error));
                 
-                // Listen for service worker updates
                 navigator.serviceWorker.addEventListener('controllerchange', () => {
-                    console.log('New service worker activated. Reloading page...');
                     window.location.reload();
                 });
             });
