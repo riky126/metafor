@@ -11,7 +11,7 @@ from route_guard import is_user_logged_in
 
 # Define routes
 routes = [
-    Route(MainLayout, children=[
+    Route(MainLayout, meta={"requires_auth": True}, children=[
         Route(Dashboard, page_title="Home Page"),
         Route(Counter, page_title="Counter"),
         Route(TodoList, page_title="TodoList"),
