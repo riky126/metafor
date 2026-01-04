@@ -9,7 +9,7 @@ from metafor.router import Route, Router
 routes = [
     Route(MainLayout, meta={"requires_auth": True}, propagate=True, children=[
         Route(Dashboard, page_title="Home Page"),
-        Route(TodoList, meta={"requires_auth": False}),
+        Route(TodoList),
         Route(Settings),
         Route(Counter),
         Route(ProfileLayout, children=[

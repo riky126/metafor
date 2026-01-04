@@ -22,7 +22,7 @@ async def is_user_logged_in(from_route, to_route, **kwargs):
     
     if not to_route.meta.get("requires_auth", False):
         print("From route requires auth")
-        return None  # Allow access
+        return False  # Allow access
     
     app_state, set_state = use_provider(container, app_provider)
     
@@ -43,7 +43,7 @@ def MyApp(children, **props):
     
     count_value, _ = use_provider(container, counter_provider)
     
-    router.after_routing(is_user_logged_in)
+    router.before_routing(is_user_logged_in)
     
     theme = use_context(ThemeContext)
 

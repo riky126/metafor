@@ -410,7 +410,11 @@ class Router:
                  self._perform_redirect(self.last_valid_route)
             else:
                  if not self.last_valid_route:
-                     self._perform_redirect("/")
+                    # Blocked on initial route with no history. 
+                    # Set to None to prevent rendering anything.
+                    # Note: _set_route_without_navigation handles None by updating state.
+                    self.set_current_route({"path": None, "ts": time.time()})
+                    self.last_valid_route = None # Ensure last valid is None
             return
         
 
@@ -744,10 +748,12 @@ class Router:
             query_params = track(lambda: self.query_signal())
 
             if path is None:
-                path, _ = self._get_current_path()
-            else:
-                 # Fallback if path is empty/none from state, use last valid
-                 path = path or self.last_valid_route
+                # Explicitly blocked or uninitialized to "nothing"
+                return None
+            
+            # Fallback if path is empty string (not None), use last valid
+            if not path:
+                 path = self.last_valid_route or "/"
 
             def render_route_hierarchy(routes_with_params: List[Tuple[Route, Dict[str, str]]],
                                     remaining_path: str = None):

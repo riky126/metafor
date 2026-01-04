@@ -240,5 +240,33 @@ class TestRouterGuards(unittest.IsolatedAsyncioTestCase):
         await router.navigate("/parent/child")
         self.assertTrue(found_parent_auth)
 
+    async def test_initial_blocking(self):
+        # Test blocking on initial route
+        def Protected(**props): return "Protected"
+        Protected.__path__ = "/protected"
+        
+        routes = [Route(Protected)]
+        
+        router = Router(routes, initial_route="/protected")
+        
+        # Hook that blocks everything
+        def block_all(prev, curr, **kwargs):
+            return False
+            
+        router.before_routing(block_all)
+        
+        # Mock window location
+        from js import window
+        window.location.hash = "#/protected"
+
+        # Simulate initial route change handling
+        # Since Router init sets current_route optimistically, we rely on _handle_route_change
+        # to correct it if blocked.
+        await router._handle_route_change(None)
+        
+        # Should be blocked, so current route should be None
+        current = router.current_route()
+        self.assertIsNone(current["path"])
+
 if __name__ == '__main__':
     unittest.main()
