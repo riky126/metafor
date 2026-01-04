@@ -245,7 +245,7 @@ class Router:
     async def _execute_hooks(self, hooks: List[Callable], path: str, params: Optional[Dict[str, str]] = None,
                              query: Optional[Dict[str, str]] = None,
                              matched_routes: Optional[List[Tuple[Route, Dict[str, str]]]] = None,
-                             stop_on_failure: bool = True) -> Tuple[bool, Optional[str]]:
+                             stop_on_failure: bool = True) -> Tuple[bool, Optional[Any]]:
         """Execute a set of hooks (before or after) for the current path."""
         params = params or {}
         query = query or {}
@@ -302,8 +302,8 @@ class Router:
             
             if stop_on_failure:
                 # Interpret result for blocking hooks
-                if isinstance(hook_result, str):
-                    # Redirect string returned
+                if isinstance(hook_result, (str, dict)):
+                    # Redirect string or dict returned
                     return False, hook_result
                 elif hook_result is False:
                     # Explicit block (no redirect)
@@ -311,6 +311,44 @@ class Router:
                 # True or None means allow -> continue loop
 
         return True, None
+
+    def _resolve_redirect(self, redirect_info: Any) -> Tuple[Optional[str], Dict[str, str]]:
+        """Resolve a redirect object (str or dict) to a path string and query params."""
+        if isinstance(redirect_info, str):
+            return redirect_info, {}
+        
+        if isinstance(redirect_info, dict):
+            path = redirect_info.get("path")
+            params = redirect_info.get("params", {})
+            query = redirect_info.get("query", {})
+            
+            if not path:
+                return None, {}
+            
+            pattern = None
+            
+            # Check if it's a named route
+            named_route = self._get_route_by_name(path)
+            if named_route:
+                pattern, route = named_route
+            else:
+                # Convert path string to regex pattern using existing utility
+                # Note: path provided in dict might be a pattern like "/users/:id"
+                _, pattern = _str_to_regex_path(path.lstrip('/'))
+            
+            if pattern:
+                 resolved_path = self._build_path_with_params(pattern, params)
+                 if resolved_path is not None:
+                     if not resolved_path.startswith('/'):
+                         resolved_path = '/' + resolved_path
+                     return resolved_path, query
+                 # Fallback if build fails? 
+                 # Maybe our regex construction doesn't strictly match _build_path expectation?
+                 console.log(f"Failed to build path for {path} with params {params}")
+                 
+            return path, query
+            
+        return None, {}
 
     async def _execute_single_hook(self, hook_fn, prev_route, route, params, query):
         """Helper function to execute a hook and handle async/sync results."""
@@ -355,9 +393,17 @@ class Router:
         can_access, redirect_path = await self._execute_hooks(self.before_hooks, path, deepest_params, query_params, matched_routes=matched_routes_with_params, stop_on_failure=True)
 
         if not can_access:
-            batch_updates(lambda: [
-                self._perform_redirect(redirect_path)
-            ])
+            resolved_path, resolved_query = self._resolve_redirect(redirect_path)
+            if resolved_path:
+                batch_updates(lambda: [
+                    self._perform_redirect(resolved_path, resolved_query)
+                ])
+            elif self.last_valid_route and self.last_valid_route != path:
+                 # Blocked without redirect (and URL changed), revert
+                 self._perform_redirect(self.last_valid_route)
+            else:
+                 if not self.last_valid_route:
+                     self._perform_redirect("/")
             return
         
 
@@ -440,7 +486,8 @@ class Router:
         path_pattern = pattern.pattern[1:-1]  # Remove ^ and $
 
         for param_name, param_value in params.items():
-            param_regex = f"\\(\\?P<{param_name}>[^/]+\\)"
+            # We need to match the literal regex string (?P<name>[^/]+) e.g. [^/]+
+            param_regex = f"\\(\\?P<{param_name}>\\[\\^/\\]\\+\\)"
             if not re.search(param_regex, path_pattern):
                 console.error(f"Parameter '{param_name}' not found in pattern '{path_pattern}'")
                 return None
@@ -487,9 +534,11 @@ class Router:
         can_access, redirect_path = await self._execute_hooks(self.before_hooks, path, deepest_params, query_params, matched_routes=matched_routes_with_params, stop_on_failure=True)
 
         if not can_access:
-            batch_updates(lambda: [
-                self._perform_redirect(redirect_path)
-            ])
+            resolved_path, resolved_query = self._resolve_redirect(redirect_path)
+            if resolved_path:
+                batch_updates(lambda: [
+                    self._perform_redirect(resolved_path, resolved_query)
+                ])
             return False
 
         self._cleanup_current()

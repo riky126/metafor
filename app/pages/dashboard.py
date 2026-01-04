@@ -39,6 +39,8 @@ def sidebar_item(item, index):
 @component()
 def TopbarMenu(**props):
     my_ref = {}
+    
+    app_state, set_appstate = use_provider(container, app_provider)
 
     router = router_delegate()
 
@@ -49,6 +51,7 @@ def TopbarMenu(**props):
             case "settings":
                 router.go("/settings")
             case _:
+                set_appstate({"auth_user": None})
                 router.go("/login")
 
     theme = use_context(ThemeContext)

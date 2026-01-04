@@ -17,25 +17,25 @@ from routes import router
 
 async def is_user_logged_in(from_route, to_route, **kwargs):
     # await asyncio.sleep(0)
-    print("From route:", from_route.path)
-    print("To route:", to_route.meta)
+    print("From route:", from_route.path if from_route else "None")
+    print("To route meta:", to_route.meta)
     
     if not to_route.meta.get("requires_auth", False):
-        print("From route doesn't requires auth")
-        return False
+        print("From route requires auth")
+        return None  # Allow access
     
     app_state, set_state = use_provider(container, app_provider)
-
+    
     if app_state()['auth_user']:
-        return True
+        return None  # Allow access
     
     auth_user = await fetch_user()
     
-    if isinstance(auth_user, Exception):
-        return False
+    if isinstance(auth_user, Exception) or auth_user is None:
+        return "/login"  # Redirect on error
     
     set_state({"auth_user": auth_user})
-    return True
+    return None  # Allow access
     
 @component()
 def MyApp(children, **props):
@@ -43,8 +43,7 @@ def MyApp(children, **props):
     
     count_value, _ = use_provider(container, counter_provider)
     
-    router.add_guard("/", is_user_logged_in, "/login")
-    router.add_guard("/counter", is_user_logged_in, "/login")
+    router.after_routing(is_user_logged_in)
     
     theme = use_context(ThemeContext)
 
