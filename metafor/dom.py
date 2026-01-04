@@ -7,11 +7,17 @@ from metafor.transpiler import jsx_to_dom_func
 from metafor.utils.html import html_sanitize
 
 def load_css(css_path=''):
-    css_file = pathlib.Path(css_path)
-    assert (css_file).exists()
+    try:
+        css_file = pathlib.Path(css_path)
+        if not css_file.exists():
+            console.warn(f"Warning: CSS file not found: {css_path}")
+            return ""
 
-    css_content = load_css_as_docstring(css_path)
-    return css_content
+        css_content = load_css_as_docstring(css_path)
+        return css_content
+    except Exception as e:
+        console.warn(f"Error loading CSS {css_path}: {e}")
+        return ""
     
 def load_css_as_docstring(file_path):
     with open(file_path, 'r') as file:

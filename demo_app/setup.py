@@ -6,7 +6,6 @@ setup(
     description='A Metafor App',
     author='Author',
     author_email='email@example.com',
-    sass_processor_enabled=True,
     packages=find_packages(),
     install_requires=[
         
