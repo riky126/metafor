@@ -103,8 +103,8 @@
     </div>
 }
 
-@style(lang="sass") {
+@style() {
     @import 'variables'; 
-    $color: gray;
+    $color: #000;
     div { color: $color; }
 }
