@@ -29,7 +29,8 @@ class RouteMode(Enum):
 
 class Route:
     def __init__(self, component: Callable, name: str = None, page_title: str = None,
-                 meta: Dict[str, Any] = {}, children: Optional[List['Route']] = None):
+                 meta: Dict[str, Any] = {}, children: Optional[List['Route']] = None,
+                 propagate: bool = False):
         if not callable(component):
             raise Exception("Component is not callable")
 
@@ -38,6 +39,7 @@ class Route:
         self.name = name
         self.meta = meta
         self.page_title = page_title
+        self._propagate = propagate
         self.children = self._compile_children(children) if children else {}
         self._compiled_regex = None
 
@@ -66,8 +68,9 @@ class Route:
             except:
                 raise Exception("'path' argument is required for page component, ensure @page('som_path') decorator called with path.")
 
-            # Merge parent meta into child meta recursively
-            route._update_meta_recursive(self.meta)
+            # Merge parent meta into child meta recursively only if propagate is True
+            if self._propagate:
+                route._update_meta_recursive(self.meta)
             
             normalized_path = child_path.lstrip('/')
             regex_path, regex_compiled = _str_to_regex_path(normalized_path)
@@ -274,6 +277,9 @@ class Router:
 
         all_params = {**params, **matched_routes_with_params[-1][1]} if matched_routes_with_params else params
 
+        # Extract just the route objects for the hook
+        raw_matched_routes = [r for r, _ in matched_routes_with_params] if matched_routes_with_params else []
+
         # Execute hooks in order
         for hook_fn in hooks:
             # Use original route objects and update their path attribute temporarily
@@ -292,7 +298,8 @@ class Router:
                 original_to_path = to_route.path
                 to_route.path = deepest_route_path_str
             
-            hook_result = await self._execute_single_hook(hook_fn, from_route, to_route, all_params, query)
+            # Pass matched_routes in kwargs
+            hook_result = await self._execute_single_hook(hook_fn, from_route, to_route, all_params, query, raw_matched_routes)
             
             # Restore original paths
             if original_from_path is not None:
@@ -350,10 +357,10 @@ class Router:
             
         return None, {}
 
-    async def _execute_single_hook(self, hook_fn, prev_route, route, params, query):
+    async def _execute_single_hook(self, hook_fn, prev_route, route, params, query, matched_routes):
         """Helper function to execute a hook and handle async/sync results."""
         try:
-            result = hook_fn(prev_route, route, **params, **query)
+            result = hook_fn(prev_route, route, **params, **query, matched_routes=matched_routes)
             if iscoroutinefunction(hook_fn) or iscoroutine(result):
                 return await result
             else:

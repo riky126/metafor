@@ -27,10 +27,3 @@ routes = [
 router = Router(routes, initial_route="/", mode=Router.HASH_MODE)
 
 router.before_routing(is_user_logged_in)
-
-def login_guard(from_route, to_route, **kwargs):
-    print("Login guard")
-    return None
-
-router.before_routing(is_user_logged_in)
-router.before_routing(login_guard)
