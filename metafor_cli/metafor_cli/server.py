@@ -203,4 +203,10 @@ def run_server(host, port):
 
     httpd = ReusingThreadingHTTPServer((host, port), Handler)
     print(f"Serving at port {host or '*'}:{port}")
-    httpd.serve_forever()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n\033[38;5;208mShutdown signal received. Stopping server...\033[0m")
+    finally:
+        httpd.server_close()
+        sys.exit(0)
