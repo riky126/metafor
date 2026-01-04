@@ -88,12 +88,14 @@ class Router:
     HISTORY_MODE = RouteMode.HISTORY_MODE
 
     def __init__(self, routes: List[Route], initial_route: str = "/",
-                 guards: Optional[Dict[str, Tuple[Callable, str]]] = None,
+                 before_hooks: Optional[List[Callable]] = None,
+                 after_hooks: Optional[List[Callable]] = None,
                  mode: str = HASH_MODE, base_path: str = ""):
         
         self.routes = self._compile_routes(routes)
         self._current_component = None
-        self.guards = guards or {}
+        self.before_hooks = before_hooks or []
+        self.after_hooks = after_hooks or []
         self.mode = mode
         self.base_path = base_path.rstrip('/')  # Remove trailing slash if present
 
@@ -240,10 +242,11 @@ class Router:
         
         return False
 
-    async def _can_access_route(self, path: str, params: Optional[Dict[str, str]] = None,
-                                query: Optional[Dict[str, str]] = None,
-                                matched_routes: Optional[List[Tuple[Route, Dict[str, str]]]] = None) -> Tuple[bool, Optional[str]]:
-        """Check if the user can access the requested route using guards."""
+    async def _execute_hooks(self, hooks: List[Callable], path: str, params: Optional[Dict[str, str]] = None,
+                             query: Optional[Dict[str, str]] = None,
+                             matched_routes: Optional[List[Tuple[Route, Dict[str, str]]]] = None,
+                             stop_on_failure: bool = True) -> Tuple[bool, Optional[str]]:
+        """Execute a set of hooks (before or after) for the current path."""
         params = params or {}
         query = query or {}
 
@@ -253,7 +256,7 @@ class Router:
             matched_routes_with_params = matched_routes
 
         if not matched_routes_with_params:
-            return True, None  # No route found means no guard to check
+            return True, None
 
         prev_path = self.last_valid_route or "/"
         
@@ -265,117 +268,60 @@ class Router:
         # Get the deepest route for guard execution
         deepest_route = matched_routes_with_params[-1][0] if matched_routes_with_params else None
         
-        
         # Use provided path as the actual path (it's already resolved with params)
         deepest_route_path_str = path
         prev_route_path_str = prev_path
 
         all_params = {**params, **matched_routes_with_params[-1][1]} if matched_routes_with_params else params
 
-        # Track which guards have been executed to avoid duplicate calls
-        executed_guards = set()
-        
-        # Check pattern-based guards first (these apply to route groups and nested routes)
-        for pattern, (guard_fn, redirect) in self.guards.items():
-            # Skip if this guard was already executed
-            if id(guard_fn) in executed_guards:
-                continue
-                
-            pattern_matches = False
+        # Execute hooks in order
+        for hook_fn in hooks:
+            # Use original route objects and update their path attribute temporarily
+            from_route = prev_route_obj
+            to_route = deepest_route
             
-            # Special case: "^$" pattern (empty path) means match routes under "/"
-            if pattern == "^$":
-                # Only match if the route is under the "/" route (MainLayout)
-                pattern_matches = self._is_route_under_guarded_route("^$", matched_routes_with_params)
-            else:
-                pattern_is_regex = pattern.startswith('^') or pattern.startswith('.*')
-                if pattern_is_regex:
-                    try:
-                        pattern_matches = re.search(pattern, path.lstrip('/')) is not None
-                    except re.error:
-                        console.error(f"Invalid regex pattern in guard: {pattern}")
-                        continue
-                else:
-                    clean_pattern = pattern.lstrip('^').rstrip('$').lstrip('/')
-                    pattern_matches = path.lstrip('/').startswith(clean_pattern) or path.lstrip('/') == clean_pattern
-
-            if pattern_matches:
-                # Use original route objects and update their path attribute temporarily
-                from_route = prev_route_obj
-                to_route = deepest_route
-                
-                # Store original paths and update with actual path strings
-                original_from_path = None
-                original_to_path = None
-                
-                if from_route:
-                    original_from_path = from_route.path
-                    from_route.path = prev_route_path_str
-                
-                if to_route:
-                    original_to_path = to_route.path
-                    to_route.path = deepest_route_path_str
-                
-                guard_result = await self._execute_guard(guard_fn, from_route, to_route, all_params, query)
-                executed_guards.add(id(guard_fn))
-                
-                # Restore original paths
-                if original_from_path is not None:
-                    from_route.path = original_from_path
-                if original_to_path is not None:
-                    to_route.path = original_to_path
-                
-                if not guard_result:
-                    return False, redirect
-
-        # Check exact path guards for the deepest route only (only if not already executed as pattern guard)
-        if deepest_route:
-            exact_guard_key = getattr(deepest_route, 'path', None)
-            if exact_guard_key and exact_guard_key in self.guards:
-                guard_fn, redirect = self.guards[exact_guard_key]
-                
-                # Skip if this guard was already executed
-                if id(guard_fn) not in executed_guards:
-                    # Use original route objects and update their path attribute temporarily
-                    from_route = prev_route_obj
-                    to_route = deepest_route
-                    
-                    # Store original paths and update with actual path strings
-                    original_from_path = None
-                    original_to_path = None
-                    
-                    if from_route:
-                        original_from_path = from_route.path
-                        from_route.path = prev_route_path_str
-                    
-                    if to_route:
-                        original_to_path = to_route.path
-                        to_route.path = deepest_route_path_str
-                    
-                    guard_result = await self._execute_guard(guard_fn, from_route, to_route, all_params, query)
-                    executed_guards.add(id(guard_fn))
-                    
-                    # Restore original paths
-                    if original_from_path is not None:
-                        from_route.path = original_from_path
-                    if original_to_path is not None:
-                        to_route.path = original_to_path
-                    
-                    if not guard_result:
-                        return False, redirect
+            # Store original paths and update with actual path strings
+            original_from_path = None
+            original_to_path = None
+            
+            if from_route:
+                original_from_path = from_route.path
+                from_route.path = prev_route_path_str
+            
+            if to_route:
+                original_to_path = to_route.path
+                to_route.path = deepest_route_path_str
+            
+            hook_result = await self._execute_single_hook(hook_fn, from_route, to_route, all_params, query)
+            
+            # Restore original paths
+            if original_from_path is not None:
+                from_route.path = original_from_path
+            if original_to_path is not None:
+                to_route.path = original_to_path
+            
+            if stop_on_failure:
+                # Interpret result for blocking hooks
+                if isinstance(hook_result, str):
+                    # Redirect string returned
+                    return False, hook_result
+                elif hook_result is False:
+                    # Explicit block (no redirect)
+                    return False, None
+                # True or None means allow -> continue loop
 
         return True, None
 
-    async def _execute_guard(self, guard_fn, prev_route, route, params, query):
-        """Helper function to execute a guard and handle async/sync results."""
+    async def _execute_single_hook(self, hook_fn, prev_route, route, params, query):
+        """Helper function to execute a hook and handle async/sync results."""
         try:
-            result = guard_fn(prev_route, route, **params, **query)
-            if iscoroutinefunction(guard_fn) or iscoroutine(result):
+            result = hook_fn(prev_route, route, **params, **query)
+            if iscoroutinefunction(hook_fn) or iscoroutine(result):
                 return await result
             else:
                 return result
         except Exception as e:
-            console.error(f"Error executing guard: {str(e)}")
+            console.error(f"Error executing hook: {str(e)}")
             return False
 
     async def _handle_hash_change(self, event) -> None:
@@ -406,7 +352,7 @@ class Router:
 
         deepest_route, deepest_params = matched_routes_with_params[-1]
 
-        can_access, redirect_path = await self._can_access_route(path, deepest_params, query_params, matched_routes=matched_routes_with_params)
+        can_access, redirect_path = await self._execute_hooks(self.before_hooks, path, deepest_params, query_params, matched_routes=matched_routes_with_params, stop_on_failure=True)
 
         if not can_access:
             batch_updates(lambda: [
@@ -420,6 +366,19 @@ class Router:
             self.set_query(query_params) if query_params else None,
             self._set_route_without_navigation(path)
         ])
+        
+        # Get previous component for hooks (captured before state update if needed, but here we need route object)
+        prev_route_obj = None # Need to capture this before update if not already captured
+        # In this context, we don't have easy access to prev_route_obj unless we re-match.
+        # But wait, we simplified logic earlier.
+        
+        # We need to capture previous route object for the hook
+        prev_path = self.last_valid_route or "/"
+        prev_matched, _ = self._find_matching_route(prev_path.lstrip('/'), self.routes)
+        prev_route_obj = prev_matched[-1][0] if prev_matched else None
+
+        # Execute after hooks
+        asyncio.create_task(self._execute_hooks(self.after_hooks, path, deepest_params, matched_routes=None, stop_on_failure=False))
 
         if event and path != self.last_valid_route:
             self._update_history(path, query_params)
@@ -511,9 +470,11 @@ class Router:
                        add_to_history: bool = True) -> bool:
         """Navigate to a new route."""
         # Skip if already on this route (no actual route change)
-        # Skip if already on this route (no actual route change)
         # if path == self.last_valid_route:
         #    return True 
+        
+        # Capture previous path for hooks
+        prev_path = self.last_valid_route or "/"
         
         matched_routes_with_params, _ = self._find_matching_route(path.lstrip('/'), self.routes)
         if not matched_routes_with_params:
@@ -523,7 +484,7 @@ class Router:
 
         deepest_route, deepest_params = matched_routes_with_params[-1]
 
-        can_access, redirect_path = await self._can_access_route(path, deepest_params, query_params, matched_routes=matched_routes_with_params)
+        can_access, redirect_path = await self._execute_hooks(self.before_hooks, path, deepest_params, query_params, matched_routes=matched_routes_with_params, stop_on_failure=True)
 
         if not can_access:
             batch_updates(lambda: [
@@ -540,6 +501,13 @@ class Router:
         ])
 
         self.last_valid_route = path
+        
+        # Resolve prev_route_obj for hooks
+        prev_matched, _ = self._find_matching_route(prev_path.lstrip('/'), self.routes)
+        prev_route_obj = prev_matched[-1][0] if prev_matched else None
+
+        # Execute after hooks
+        asyncio.create_task(self._execute_hooks(self.after_hooks, path, deepest_params, matched_routes=matched_routes_with_params, stop_on_failure=False))
 
         query_string = ""
         if query_params:
@@ -614,20 +582,15 @@ class Router:
 
         return success
 
-    def add_guard(self, path_pattern: str, guard_fn: Callable, redirect_path: str) -> None:
-        """Add a guard for a specific route pattern."""
-        if path_pattern.startswith('^') and path_pattern.endswith('$'):
-            self.guards[path_pattern] = (guard_fn, redirect_path)
-        elif path_pattern == "/":
-            # Special case: "/" should guard all routes (will be handled specially in _can_access_route)
-            self.guards["^$"] = (guard_fn, redirect_path)
-        elif path_pattern.endswith('*'):
-            base_pattern = path_pattern[:-1]
-            regex_path = f"^{re.escape(base_pattern.lstrip('/'))}"
-            self.guards[regex_path] = (guard_fn, redirect_path)
-        else:
-            regex_path, _ = _str_to_regex_path(path_pattern.lstrip('/'))
-            self.guards[regex_path] = (guard_fn, redirect_path)
+
+
+    def before_routing(self, hook_fn: Callable) -> None:
+        """Add a hook to run before routing. Returns True/None to allow, False to block, or str to redirect."""
+        self.before_hooks.append(hook_fn)
+
+    def after_routing(self, hook_fn: Callable) -> None:
+        """Add a hook to run after routing completes."""
+        self.after_hooks.append(hook_fn)
 
     def _cleanup_current(self) -> None:
         """Clean up the current route component and release resources."""
