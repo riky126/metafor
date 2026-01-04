@@ -7,7 +7,7 @@ async def is_user_logged_in(from_route, to_route, **kwargs):
     print("From route:", from_route.path)
     print("To route meta:", to_route.meta)
     
-    if from_route.path != "/login" and not to_route.meta.get("requires_auth", False):
+    if to_route.path != "/login" and not to_route.meta.get("requires_auth", False):
         print("From route doesn't requires auth")
         return False  # Block access
     

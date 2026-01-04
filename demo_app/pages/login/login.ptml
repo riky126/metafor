@@ -1,17 +1,13 @@
 @page("/login", "Login") @props {
     from .login_form import LoginForm
-    from app_state import container, app_provider
-    from metafor.core import on_mount
-    from metafor.hooks import use_provider
+    from services import is_authenticated
     
     router = props.get("router")
-    app_state, _ = use_provider(container, app_provider)
-    
-    def on_mounted():
-        if app_state()['auth_user']:
-            router.go("/")
 
-    on_mount(on_mounted)
+    # Redirect to home if already authenticated
+    if is_authenticated():
+        router.go("/")
+        return
 }
 
 @ptml {
