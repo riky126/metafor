@@ -14,15 +14,17 @@ class Http:
         Provides a simple interface for making HTTP requests from Python code running in the browser.
     """
 
-    def __init__(self, base_url: str = "", default_headers: Dict[str, str] = None):
+    def __init__(self, base_url: str = "", default_headers: Dict[str, str] = None, with_credentials: bool = False):
         """
         Initialize the HTTP client.
 
         Args:
             base_url: The base URL to prepend to all request URLs
             default_headers: Default headers to include with every request
+            with_credentials: Whether to send cookies with cross-origin requests
         """
         self.base_url = base_url
+        self.with_credentials = with_credentials
         self.default_headers = default_headers or {
             "Content-Type": "application/json"
         }
@@ -122,7 +124,8 @@ class Http:
                       on_upload_progress: Callable = None,
                       on_download_progress: Callable = None,
                       cancellation_token: CancellationToken = None,
-                      retry_config: Union[RetryConfig, bool] = None) -> Dict[str, Any]:
+                      retry_config: Union[RetryConfig, bool] = None,
+                      with_credentials: bool = None) -> Dict[str, Any]:
         """
         Make an HTTP request.
 
@@ -138,6 +141,7 @@ class Http:
             on_download_progress: Callback for tracking download progress
             cancellation_token: Token for cancelling the request
             retry_config: Configuration for request retries or True to use default
+            with_credentials: Whether to send cookies with cross-origin requests (overrides instance default)
 
         Returns:
             Response object with data, status, headers, etc.
@@ -174,6 +178,11 @@ class Http:
         # Add cancellation support if token provided
         if cancellation_token:
             config["signal"] = cancellation_token.get_signal()
+
+        # Handle with_credentials
+        should_use_credentials = self.with_credentials if with_credentials is None else with_credentials
+        if should_use_credentials:
+            config["credentials"] = "include"
 
         # Prepare and add data if needed for this request method
         if method.upper() not in ["GET", "HEAD"] and data is not None:
@@ -806,21 +815,24 @@ class Http:
                          headers: Dict[str, str] = None, timeout: int = 0,
                          on_download_progress: Callable = None,
                          cancellation_token: CancellationToken = None,
-                         retry_config: Union[RetryConfig, bool, None] = None) -> Dict[str, Any]:
+                         retry_config: Union[RetryConfig, bool, None] = None,
+                         with_credentials: bool = None) -> Dict[str, Any]:
 
         """Perform a streaming GET request with cancellation and retry support"""
         return await self.request("GET", url, params=params, headers=headers,
                                   timeout=timeout, stream=True,
                                   on_download_progress=on_download_progress,
                                   cancellation_token=cancellation_token,
-                                  retry_config=retry_config)
+                                  retry_config=retry_config,
+                                  with_credentials=with_credentials)
 
     async def stream_post(self, url: str, data: Any = None, params: Dict[str, str] = None,
                           headers: Dict[str, str] = None, timeout: int = 0,
                           on_upload_progress: Callable = None,
                           on_download_progress: Callable = None,
                           cancellation_token: CancellationToken = None,
-                          retry_config: Union[RetryConfig, bool, None] = None) -> Dict[str, Any]:
+                          retry_config: Union[RetryConfig, bool, None] = None,
+                          with_credentials: bool = None) -> Dict[str, Any]:
 
         """Perform a streaming POST request with cancellation and retry support"""
         return await self.request("POST", url, data=data, params=params,
@@ -828,28 +840,32 @@ class Http:
                                   on_upload_progress=on_upload_progress,
                                   on_download_progress=on_download_progress,
                                   cancellation_token=cancellation_token,
-                                  retry_config=retry_config)
+                                  retry_config=retry_config,
+                                  with_credentials=with_credentials)
 
     # Convenience methods for different HTTP verbs with progress tracking, cancellation and retry
     async def get(self, url: str, params: Dict[str, str] = None,
                   headers: Dict[str, str] = None, timeout: int = 0,
                   on_download_progress: Callable = None,
                   cancellation_token: CancellationToken = None,
-                  retry_config: Union[RetryConfig, bool, None] = None) -> Dict[str, Any]:
+                  retry_config: Union[RetryConfig, bool, None] = None,
+                  with_credentials: bool = None) -> Dict[str, Any]:
 
         """Perform a GET request with optional download progress tracking, cancellation and retry"""
         return await self.request("GET", url, params=params, headers=headers,
                                   timeout=timeout,
                                   on_download_progress=on_download_progress,
                                   cancellation_token=cancellation_token,
-                                  retry_config=retry_config)
+                                  retry_config=retry_config,
+                                  with_credentials=with_credentials)
 
     async def post(self, url: str, data: Any = None, params: Dict[str, str] = None,
                    headers: Dict[str, str] = None, timeout: int = 0,
                    on_upload_progress: Callable = None,
                    on_download_progress: Callable = None,
                    cancellation_token: CancellationToken = None,
-                   retry_config: Union[RetryConfig, bool, None] = None) -> Dict[str, Any]:
+                   retry_config: Union[RetryConfig, bool, None] = None,
+                   with_credentials: bool = None) -> Dict[str, Any]:
 
         """Perform a POST request with optional progress tracking, cancellation and retry"""
         return await self.request("POST", url, data=data, params=params,
@@ -857,14 +873,16 @@ class Http:
                                   on_upload_progress=on_upload_progress,
                                   on_download_progress=on_download_progress,
                                   cancellation_token=cancellation_token,
-                                  retry_config=retry_config)
+                                  retry_config=retry_config,
+                                  with_credentials=with_credentials)
 
     async def put(self, url: str, data: Any = None, params: Dict[str, str] = None,
                   headers: Dict[str, str] = None, timeout: int = 0,
                   on_upload_progress: Callable = None,
                   on_download_progress: Callable = None,
                   cancellation_token: CancellationToken = None,
-                  retry_config: Union[RetryConfig, bool, None] = None) -> Dict[str, Any]:
+                  retry_config: Union[RetryConfig, bool, None] = None,
+                  with_credentials: bool = None) -> Dict[str, Any]:
 
         """Perform a PUT request with optional progress tracking, cancellation and retry"""
         return await self.request("PUT", url, data=data, params=params,
@@ -872,25 +890,29 @@ class Http:
                                   on_upload_progress=on_upload_progress,
                                   on_download_progress=on_download_progress,
                                   cancellation_token=cancellation_token,
-                                  retry_config=retry_config)
+                                  retry_config=retry_config,
+                                  with_credentials=with_credentials)
 
     async def delete(self, url: str, data: Any = None, params: Dict[str, str] = None,
                      headers: Dict[str, str] = None, timeout: int = 0,
                      cancellation_token: CancellationToken = None,
-                     retry_config: Union[RetryConfig, bool, None] = None) -> Dict[str, Any]:
+                     retry_config: Union[RetryConfig, bool, None] = None,
+                     with_credentials: bool = None) -> Dict[str, Any]:
 
         """Perform a DELETE request with cancellation and retry support"""
         return await self.request("DELETE", url, data=data, params=params,
                                   headers=headers, timeout=timeout,
                                   cancellation_token=cancellation_token,
-                                  retry_config=retry_config)
+                                  retry_config=retry_config,
+                                  with_credentials=with_credentials)
 
     async def patch(self, url: str, data: Any = None, params: Dict[str, str] = None,
                     headers: Dict[str, str] = None, timeout: int = 0,
                     on_upload_progress: Callable = None,
                     on_download_progress: Callable = None,
                     cancellation_token: CancellationToken = None,
-                    retry_config: Union[RetryConfig, bool, None] = None) -> Dict[str, Any]:
+                    retry_config: Union[RetryConfig, bool, None] = None,
+                    with_credentials: bool = None) -> Dict[str, Any]:
 
         """Perform a PATCH request with optional progress tracking, cancellation and retry"""
         return await self.request("PATCH", url, data=data, params=params,
@@ -898,7 +920,8 @@ class Http:
                                   on_upload_progress=on_upload_progress,
                                   on_download_progress=on_download_progress,
                                   cancellation_token=cancellation_token,
-                                  retry_config=retry_config)
+                                  retry_config=retry_config,
+                                  with_credentials=with_credentials)
 
     # Cookie management methods
     def set_cookie(self, name: str, value: str, options: Dict[str, Any] = None):
