@@ -8,6 +8,6 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     install_requires=[
-        # Add framework dependencies here if any
+        "libsass",
     ],
 )

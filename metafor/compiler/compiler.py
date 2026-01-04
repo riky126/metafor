@@ -329,7 +329,7 @@ class ModuleCodeGenerator:
     def __init__(self):
         self.generated_line_map = {}
 
-    def generate(self, ctx, ptml_dom_code, style_block=None, context_blocks=None):
+    def generate(self, ctx, ptml_dom_code, style_block=None, context_blocks=None, filename=None):
         code = []
         self.generated_line_map = {}
         
@@ -343,13 +343,13 @@ class ModuleCodeGenerator:
         code.extend(ctx['imports'])
         code.append("")
 
-        css_kwarg = self._process_styles(code, style_block)
+        css_kwarg = self._process_styles(code, style_block, filename)
         
         self._generate_component_def(code, ctx, css_kwarg, ptml_dom_code, context_blocks)
         
         return "\n".join(code), self.generated_line_map
 
-    def _process_styles(self, code, style_block):
+    def _process_styles(self, code, style_block, filename=None):
         if not style_block: return "None"
         
         args_str = style_block.get('args', '')
@@ -358,9 +358,45 @@ class ModuleCodeGenerator:
         src = style_args.get('src')
         name = style_args.get('name')
         scope = style_args.get('scope', 'scoped')
+        lang = style_args.get('lang', 'css')
         
         style_parts = []
         inline = style_block["content"].strip()
+
+        # Handle Sass/SCSS compilation
+        if lang in ('sass', 'scss'):
+            import sass
+            import os
+            import tempfile
+            
+            if inline:
+                # Create temp file
+                # User requested .scss extension specifically
+                suffix = '.scss' if lang == 'sass' else f'.{lang}'
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, mode='w') as tmp:
+                    tmp.write(inline)
+                    tmp_path = tmp.name
+                
+                try:
+                    # Compile Sass
+                    include_paths = []
+                    if filename:
+                        include_paths.append(os.path.dirname(os.path.abspath(filename)))
+                        
+                    compiled_css = sass.compile(filename=tmp_path, include_paths=include_paths)
+                    inline = compiled_css.strip()
+                except Exception as e:
+                    print(f"Sass compilation failed: {e}")
+                    raise e
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+
+            if src:
+                if src.endswith('.sass') or src.endswith('.scss'):
+                     # We change the generated code to load .css instead
+                     src = src.rsplit('.', 1)[0] + '.css'
+
         if inline:
             code.append(f'inline_styles = """{inline}"""')
             style_parts.append('inline_styles')
@@ -550,7 +586,8 @@ class MetaforCompiler:
         style_block = blocks.get('style')
         
         generator = ModuleCodeGenerator()
-        final_code, line_map = generator.generate(processed_data, ptml_code, style_block, context_blocks)
+        generator = ModuleCodeGenerator()
+        final_code, line_map = generator.generate(processed_data, ptml_code, style_block, context_blocks, filename=self.filename)
         
         validator = ScopeValidator()
         validator.validate(final_code, line_map, processed_data['component_name'], 

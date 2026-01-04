@@ -1,0 +1,14 @@
+$color: white;
+
+div {
+    background-color: $color;
+}
+
+@mixin theme { color: green; }
+
+.base { border: 1px solid gray; }
+
+.my-button {
+    @include theme;
+    @extend .base;
+}
