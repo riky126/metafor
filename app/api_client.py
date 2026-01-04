@@ -16,6 +16,6 @@ def set_authorization_header(token: str):
     api.default_headers["Authorization"] = f"Bearer {token}"
 
 # Register the interceptors right after creating the api instance
-api.add_request_interceptor(log_request)
-api.add_request_interceptor(token_interceptor)
-api.add_error_interceptor(refresh_token_interceptor)
+api.interceptors.request.attach(log_request)
+api.interceptors.response.attach(token_interceptor)
+api.interceptors.error.attach(refresh_token_interceptor)
