@@ -923,6 +923,32 @@ class Http:
                                   retry_config=retry_config,
                                   with_credentials=with_credentials)
 
+    async def head(self, url: str, params: Dict[str, str] = None,
+                   headers: Dict[str, str] = None, timeout: int = 0,
+                   cancellation_token: CancellationToken = None,
+                   retry_config: Union[RetryConfig, bool, None] = None,
+                   with_credentials: bool = None) -> Dict[str, Any]:
+
+        """Perform a HEAD request with cancellation and retry support"""
+        return await self.request("HEAD", url, params=params, headers=headers,
+                                  timeout=timeout,
+                                  cancellation_token=cancellation_token,
+                                  retry_config=retry_config,
+                                  with_credentials=with_credentials)
+
+    async def options(self, url: str, params: Dict[str, str] = None,
+                      headers: Dict[str, str] = None, timeout: int = 0,
+                      cancellation_token: CancellationToken = None,
+                      retry_config: Union[RetryConfig, bool, None] = None,
+                      with_credentials: bool = None) -> Dict[str, Any]:
+
+        """Perform an OPTIONS request with cancellation and retry support"""
+        return await self.request("OPTIONS", url, params=params, headers=headers,
+                                  timeout=timeout,
+                                  cancellation_token=cancellation_token,
+                                  retry_config=retry_config,
+                                  with_credentials=with_credentials)
+
     # Cookie management methods
     def set_cookie(self, name: str, value: str, options: Dict[str, Any] = None):
         """Set a cookie"""
