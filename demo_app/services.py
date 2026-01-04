@@ -1,4 +1,4 @@
-from api_client import api, set_authorization_header
+from api_client import http_client, set_authorization_header
 from metafor.http import HttpError
 from metafor.storage import local_storage
 from metafor.router import router_delegate
@@ -8,7 +8,7 @@ from metafor.hooks import use_provider
 async def fetch_user():
     try:
         # User GET request
-        response = await api.get("/user/")
+        response = await http_client.get("/user/")
         return response.get("data")
     except HttpError as e:
         return e
@@ -16,7 +16,7 @@ async def fetch_user():
 async def fetch_account():
     try:
         # Account GET request
-        response = await api.get("/account/")
+        response = await http_client.get("/account/")
         return response.get("data")
     except HttpError as e:
         return e
@@ -28,7 +28,7 @@ async def do_auth(**credentials):
         HttpError: If the authentication request fails.
     """
     try:
-        response = await api.post("/login/", credentials)
+        response = await http_client.post("/login/", credentials)
 
         # Check for successful authentication
         if response.get("status") == 200:
@@ -49,7 +49,7 @@ async def refresh_token():
     try:
         # Refresh Token request
         tokens = local_storage.load("access_tokens") or {}
-        response = await api.post("/refresh/", {'refresh': tokens.get("refresh_token", '')})
+        response = await http_client.post("/refresh/", {'refresh': tokens.get("refresh_token", '')})
         if response.get("status") == 200:
             return response.get("data")
         raise HttpError(response)        

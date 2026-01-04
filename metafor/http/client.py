@@ -8,6 +8,31 @@ from .cookie import CookieManager
 from .exceptions import HttpError, RetryRequestError, RequestCancelledError
 from .support import RetryConfig, ProgressTracker, CancellationToken
 
+class InterceptorManager:
+    """Manages a list of interceptor functions."""
+    def __init__(self):
+        self.handlers = [] # type: List[Callable]
+
+    def attach(self, fn: Callable) -> None:
+        """Attach an interceptor function."""
+        if callable(fn):
+            self.handlers.append(fn)
+
+    def flush(self, fn: Callable) -> None:
+        """Flush an interceptor function."""
+        if fn in self.handlers:
+            self.handlers.remove(fn)
+
+    def __iter__(self):
+        return iter(self.handlers)
+
+class Interceptors:
+    """Container for request, response, and error interceptor managers."""
+    def __init__(self):
+        self.request = InterceptorManager()
+        self.response = InterceptorManager()
+        self.error = InterceptorManager()
+
 class Http:
     """
         A Metafor/Pyodide HTTP client inspired by axios.
@@ -28,11 +53,10 @@ class Http:
         self.default_headers = default_headers or {
             "Content-Type": "application/json"
         }
-        self.interceptors = {
-            "request": [],
-            "response": [],
-            "error": []
+        self.default_headers = default_headers or {
+            "Content-Type": "application/json"
         }
+        self.interceptors = Interceptors()
         self.cookie_manager = CookieManager()
         self.default_retry_config = RetryConfig()
 
@@ -217,7 +241,7 @@ class Http:
         # where "config" is the dictionary passed to fetch
         current_request_config = {"url": full_url, "config": config}
         try:
-            for interceptor in self.interceptors["request"]:
+            for interceptor in self.interceptors.request:
                 returned_config = await self._run_interceptor(interceptor, current_request_config)
                 # Allow interceptors to return None or the modified config
                 current_request_config = returned_config if returned_config is not None else current_request_config
@@ -233,7 +257,7 @@ class Http:
                 "config": config # Use original config for error context
             }
             # Apply error interceptors (though unlikely to retry from here)
-            for error_interceptor in self.interceptors["error"]:
+            for error_interceptor in self.interceptors.error:
                 try:
                     error_data = await self._run_interceptor(error_interceptor, error_data)
                     # If interceptor signals retry (unlikely here, but for consistency)
@@ -313,7 +337,7 @@ class Http:
 
                 # Apply response interceptors
                 try:
-                    for interceptor in self.interceptors["response"]:
+                    for interceptor in self.interceptors.response:
                         result = await self._run_interceptor(interceptor, result)
                 except Exception as e:
                     # Handle response interceptor errors
@@ -325,7 +349,7 @@ class Http:
                         "config": current_request_config['config']
                     }
                     # Apply error interceptors
-                    for error_interceptor in self.interceptors["error"]:
+                    for error_interceptor in self.interceptors.error:
                         try:
                             last_error_data = await self._run_interceptor(error_interceptor, last_error_data)
                             # Check if error interceptor handled it and wants to retry
@@ -382,10 +406,9 @@ class Http:
                              # Max standard attempts reached, fall through to error interceptors
                              pass
 
-                    interceptor_handled_error = False
                     current_request_config['config']["_interceptor_retried"] = False # Reset flag
 
-                    for error_interceptor in self.interceptors["error"]:
+                    for error_interceptor in self.interceptors.error:
                         try:
                             # Pass the HTTP error data to the interceptor
                             returned_value = await self._run_interceptor(error_interceptor, error_data_http.copy()) # Pass a copy
@@ -502,7 +525,7 @@ class Http:
                 # --- Error Interceptor Logic for Network/Execution Errors ---
                 interceptor_handled_error = False
                 current_request_config['config']["_interceptor_retried"] = False # Reset flag
-                for error_interceptor in self.interceptors["error"]:
+                for error_interceptor in self.interceptors.error:
                     try:
                         returned_value = await self._run_interceptor(error_interceptor, last_error_data.copy()) # Pass a copy
 
@@ -971,49 +994,41 @@ class Http:
         self.cookie_manager.clear_all_cookies()
 
     # Interceptors management
+    # Interceptors management
     def add_request_interceptor(self, fn: Callable) -> None:
         """Add a request interceptor function (can be async)"""
-        if callable(fn):
-            self.interceptors["request"].append(fn)
+        # Deprecated: Use self.interceptors.request.attach(fn)
+        self.interceptors.request.attach(fn)
 
     def add_response_interceptor(self, fn: Callable) -> None:
         """Add a response interceptor function (can be async)"""
-        if callable(fn):
-            self.interceptors["response"].append(fn)
+        # Deprecated: Use self.interceptors.response.attach(fn)
+        self.interceptors.response.attach(fn)
 
     def add_error_interceptor(self, fn: Callable) -> None:
         """Add an error interceptor function (can be async)"""
-        if callable(fn):
-            self.interceptors["error"].append(fn)
+        # Deprecated: Use self.interceptors.error.attach(fn)
+        self.interceptors.error.attach(fn)
 
     def remove_request_interceptor(self, fn: Callable) -> None:
         """Remove a request interceptor function"""
-        try:
-            self.interceptors["request"].remove(fn)
-        except ValueError:
-            pass # Function not found
+        # Deprecated: Use self.interceptors.request.flush(fn)
+        self.interceptors.request.flush(fn)
 
     def remove_response_interceptor(self, fn: Callable) -> None:
         """Remove a response interceptor function"""
-        try:
-            self.interceptors["response"].remove(fn)
-        except ValueError:
-            pass # Function not found
+        # Deprecated: Use self.interceptors.response.flush(fn)
+        self.interceptors.response.flush(fn)
 
     def remove_error_interceptor(self, fn: Callable) -> None:
         """Remove an error interceptor function"""
-        try:
-            self.interceptors["error"].remove(fn)
-        except ValueError:
-            pass # Function not found
+        # Deprecated: Use self.interceptors.error.flush(fn)
+        self.interceptors.error.flush(fn)
 
     def clear_interceptors(self) -> None:
         """Clear all interceptors"""
-        self.interceptors = {
-            "request": [],
-            "response": [],
-            "error": []
-        }
+        # Re-initialize to clear
+        self.interceptors = Interceptors()
 
 
 # --- Helper functions (optional, could be outside the class) ---

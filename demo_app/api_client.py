@@ -3,7 +3,7 @@ from metafor.http import Http
 from interceptors import log_request, token_interceptor, refresh_token_interceptor
 
 # Create a client with base URL and default headers
-api = Http(
+http_client = Http(
     base_url="//localhost:8000/api",
     default_headers={
         "Content-Type": "application/json",
@@ -12,10 +12,10 @@ api = Http(
 )
 
 def set_authorization_header(token: str):
-    global api
-    api.default_headers["Authorization"] = f"Bearer {token}"
+    global http_client
+    http_client.default_headers["Authorization"] = f"Bearer {token}"
 
 # Register the interceptors right after creating the api instance
-api.add_request_interceptor(log_request)
-api.add_request_interceptor(token_interceptor)
-api.add_error_interceptor(refresh_token_interceptor)
+http_client.interceptors.request.attach(log_request)
+http_client.interceptors.response.attach(token_interceptor)
+http_client.interceptors.error.attach(refresh_token_interceptor)
