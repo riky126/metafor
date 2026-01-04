@@ -55,11 +55,11 @@ def cmd_new(args):
     print("metafor serve")
 
 def cmd_build(args):
-    build_project(os.getcwd(), output_type='pyc')
+    build_project(os.getcwd(), output_type=args.output_type)
 
 def cmd_serve(args):
     # First build
-    build_project(os.getcwd(), output_type='py')
+    build_project(os.getcwd(), output_type=args.output_type)
     run_server(args.host, args.port)
 
 def cmd_clean(args):
@@ -104,12 +104,14 @@ def main():
     
     # build command
     parser_build = subparsers.add_parser("build", help="Build the current app")
+    parser_build.add_argument("--output-type", choices=['py', 'pyc'], default='pyc', help="Output type (py or pyc)")
     parser_build.set_defaults(func=cmd_build)
     
     # serve command
     parser_serve = subparsers.add_parser("serve", help="Serve the current app")
     parser_serve.add_argument("--port", type=int, default=8080, help="Port to serve on")
     parser_serve.add_argument("--host", default="", help="Host to serve on")
+    parser_serve.add_argument("--output-type", choices=['py', 'pyc'], default='py', help="Output type (py or pyc)")
     parser_serve.set_defaults(func=cmd_serve)
     
     # clean command
