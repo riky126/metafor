@@ -4,7 +4,8 @@ import pathlib
 import hashlib
 import json
 import concurrent.futures
-from metafor.compiler import MetaforCompiler
+import time
+# from metafor.compiler import MetaforCompiler
 
 class BuildCache:
     def __init__(self, cache_file):
@@ -58,6 +59,15 @@ class MetaforBundler:
         self.setup_config = {}
         self.cache = BuildCache(self.src_dir / ".metafor" / "cache.json")
 
+        # Ensure framework is importable (for compiler)
+        if self.framework_dir:
+            import sys
+            # Assuming framework_dir points to the package directory (containing __init__.py)
+            # We need to add its parent to sys.path
+            parent_dir = str(self.framework_dir.parent.resolve())
+            if parent_dir not in sys.path:
+                sys.path.insert(0, parent_dir)
+
     def _parse_setup_py(self):
         setup_path = self.src_dir / "setup.py"
         if not setup_path.exists():
@@ -72,7 +82,7 @@ class MetaforBundler:
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'setup':
                     for keyword in node.keywords:
-                        if keyword.arg in ['name', 'version', 'packages', 'py_modules', 'install_requires', 'package_data', 'include_package_data']:
+                        if keyword.arg in ['name', 'version', 'packages', 'py_modules', 'install_requires', 'package_data', 'include_package_data', 'sass_processor_enabled']:
                             try:
                                 value = ast.literal_eval(keyword.value)
                                 self.setup_config[keyword.arg] = value
@@ -196,7 +206,10 @@ class MetaforBundler:
                     target_dir = self.out_dir / rel_path.parent
                     if not target_dir.exists(): target_dir.mkdir(parents=True)
                     
-                    if file.endswith('.scss') or file.endswith('.sass'):
+                    is_sass = file.endswith('.scss') or file.endswith('.sass')
+                    sass_enabled = self.setup_config.get('sass_processor_enabled', False)
+
+                    if is_sass and sass_enabled:
                         target_filename = file_path.with_suffix('.css').name
                         target_file = target_dir / target_filename
                         
@@ -290,7 +303,10 @@ class MetaforBundler:
 
         # Create Wheel from staging
         # We COPY staging to a temp build dir because _create_wheel is destructive (pyc compilation)
-        wheel_build_dir = self.out_dir / "_wheel_build_tmp"
+        # Use a unique directory to avoid shutil.copytree race conditions/errors
+        timestamp = int(time.time() * 1000)
+        wheel_build_dir = self.out_dir / f"_wheel_build_tmp_{timestamp}"
+        
         if wheel_build_dir.exists(): shutil.rmtree(wheel_build_dir)
         shutil.copytree(wheel_staging, wheel_build_dir)
 
@@ -344,6 +360,7 @@ class MetaforBundler:
             with open(file_path, 'r') as f:
                 source = f.read()
             
+            from metafor.compiler import MetaforCompiler
             compiler = MetaforCompiler()
             filename = str(file_path)
             compiled_code = compiler.compile(source, filename=filename)
