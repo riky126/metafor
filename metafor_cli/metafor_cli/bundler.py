@@ -102,11 +102,10 @@ class MetaforBundler:
         
         # Staging directory for persistent intermediate files (compiled PTML -> PY, copies of PY)
         # We do NOT delete this, allowing incremental updates.
-        wheel_staging = self.out_dir / "_incremental_staging"
-        print(f"--- INCREMENTAL BUNDLER v2 ---")
-        print(f"Staging dir: {wheel_staging.resolve()}")
+        wheel_staging = self.out_dir / "_staging_"
+        # print(f"Staging dir: {wheel_staging.resolve()}")
         wheel_staging.mkdir(parents=True, exist_ok=True)
-        print(f"Staging exists? {wheel_staging.exists()}")
+        # print(f"Staging exists? {wheel_staging.exists()}")
 
         # Copy framework to staging (only if framework changed or doesn't exist)
         if self.framework_dir and self.framework_dir.exists():
