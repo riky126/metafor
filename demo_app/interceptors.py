@@ -143,7 +143,6 @@ async def refresh_token_interceptor(error_data):
 
 
 def log_request(request_config):
-    print("Request:", request_config)
     return request_config
 
 def token_interceptor(request_config):
