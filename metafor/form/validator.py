@@ -228,14 +228,13 @@ class Validator:
         return validate
 
     @staticmethod
-    def cross_field(value: Any, cross_validator: Callable[[Any, Dict[str, Any]], Optional[str]]) -> Optional[str]:
+    def cross_field(validation_func: Callable[[Dict[str, Any]], Optional[Dict[str, str]]]) -> Callable[[Dict[str, Any]], Optional[Dict[str, str]]]:
         """
-        Creates a placeholder for cross-field validation that will be resolved during form validation.
-        The actual validation happens in the Form class where the form_data is available.
+        Helper to define a cross-field validator. 
+        It currently just passes through the function, but provides type hinting and structure.
+        Use with `schema.add_validator()`.
         """
-        # This is a special case - the cross_validator will be used directly
-        # by the Form class, which will provide the form_data
-        return None
+        return validation_func
 
     @staticmethod
     def custom(validation_func: Callable[[Any], Optional[str]]) -> Callable[[Any], Optional[str]]:

@@ -11,7 +11,10 @@ from metafor.decorators import reusable
 from metafor.form.schema import Schema
 
 # Time in milliseconds to wait before running debounced validation
+# Time in milliseconds to wait before running debounced validation
 DEFAULT_DEBOUNCE_MS = 200
+
+_UNSET = object()
 
 class FieldUsage:
     """
@@ -55,6 +58,73 @@ class FieldUsage:
         self.errors = metadata.get("errors", None)
         self.touched = metadata.get("is_touched", False)
         self.dirty = metadata.get("is_dirty", False)
+
+class FieldAccessProxy:
+    """
+    Proxy for cleaner field access syntax.
+    Enables usage like: form.F.user.email or form.F.items[0].name
+    """
+    def __init__(self, form: 'Form', path: str = ""):
+        self._form = form
+        self._path = path
+
+    def __getattr__(self, name: str) -> 'FieldAccessProxy':
+        new_path = f"{self._path}.{name}" if self._path else name
+        return FieldAccessProxy(self._form, new_path)
+
+    def __getitem__(self, key: Union[int, str]) -> 'FieldAccessProxy':
+        if isinstance(key, int):
+            # Array index: items[0]
+            new_path = f"{self._path}[{key}]"
+        else:
+            # Dict key: items['name'] (rarely used but supported)
+            new_path = f"{self._path}.{key}" if self._path else key
+        return FieldAccessProxy(self._form, new_path)
+
+    def _get_field(self) -> FieldUsage:
+        field = self._form.field(self._path)
+        if field is None:
+            # Should we return a dummy or error?
+            # Existing behavior of field() prints warning and returns None.
+            # But let's assume valid access for now or let it fail if user tries to specific ops
+            raise AttributeError(f"Field '{self._path}' not found")
+        return field
+
+    @property
+    def value(self) -> Any:
+        return self._get_field().value()
+        
+    def set_value(self, val: Any) -> None:
+        self._get_field().set_value(val)
+        
+    @property
+    def meta(self) -> Dict[str, Any]:
+        return self._get_field().meta
+        
+    @property
+    def valid(self) -> bool:
+        return self.meta.valid
+        
+    @property
+    def errors(self) -> List[str]:
+        return self.meta.errors
+        
+    @property
+    def error(self) -> Optional[str]:
+        return self.meta.error
+        
+    @property
+    def touched(self) -> bool:
+        return self.meta.touched
+        
+    @property
+    def dirty(self) -> bool:
+        return self.meta.dirty
+    
+    # Allow calling the proxy to get the raw FieldUsage object if needed, 
+    # though properties cover most cases.  
+    def __call__(self) -> FieldUsage:
+        return self._get_field()
         
 class Form:
     """
@@ -79,18 +149,36 @@ class Form:
             "validated_at": None
         })
 
-    
+    @property
+    def F(self) -> FieldAccessProxy:
+        """
+        Returns a FieldAccessProxy for cleaner field access syntax.
+        Usage: form.F.user.email
+        """
+        return FieldAccessProxy(self)
+        
     def field(self, field_name: str) -> Any:
-
-        if field_name in self.form_data():
+        current_val = self.get_nested_value(field_name) if "." in field_name or "[" in field_name else self.form_data().get(field_name)
+        
+        # Relaxed check: if it's a nested path, we assume it's valid if get_nested_value returns something 
+        # OR if we want to allow binding to null fields that will be created on write.
+        # For top-level, we still check key existence or schema existence?
+        # Let's check if the path exists in the form data OR in the schema.
+        # Since checking schema deep is hard, let's rely on data presence or just allow it.
+        
+        # Check if value exists or if it's computable
+        if True: # defaulting to always returning a field handle if requested, simplifies binding
             def value() -> Any:
-                return self.form_data()[field_name]
+                return self.get_nested_value(field_name)
             
             def set_value(new_value: Any) -> None:
-                self.set_form_data({**self.form_data(), field_name: new_value})
-                self.set_dirty({**self.dirty(), field_name: True})
-                self.set_touched({**self.touched(), field_name: True})
-                self.validate_field(field_name, new_value)
+                if "." in field_name or "[" in field_name:
+                    self.set_nested_value(field_name, new_value)
+                else:
+                    self.set_form_data({**self.form_data(), field_name: new_value})
+                    self.set_dirty({**self.dirty(), field_name: True})
+                    self.set_touched({**self.touched(), field_name: True})
+                    self.validate_field(field_name, new_value)
 
             def get_meta() -> Dict[str, Any]:
                 errors = self.get_field_errors(field_name)
@@ -172,11 +260,60 @@ class Form:
         """
         # Handle nested fields
         if "." in field_name:
-            # Not implementing nested field validation here to keep the example simpler
-            # In practice, you would need to traverse the object structure
-            pass
+            parts = field_name.split('.')
+            current_schema = self.schema
             
-        field_schema = self.schema.fields.get(field_name)
+            # Traverse to find the field schema
+            for i, part in enumerate(parts[:-1]):
+                # Check for array indexing
+                if '[' in part and part.endswith(']'):
+                    array_name, _ = part.split('[', 1)
+                    if array_name in current_schema.field_arrays:
+                         current_schema = current_schema.field_arrays[array_name].item_schema
+                    else:
+                        # Path invalid in schema
+                        return True
+                elif part in current_schema.nested_schemas:
+                    current_schema = current_schema.nested_schemas[part]
+                else:
+                    # Path invalid in schema
+                    return True
+            
+            last_part = parts[-1]
+            # Handle array indexing on the last part (unlikely for a field definition, but possible for value access)
+            if '[' in last_part and last_part.endswith(']'):
+                 # Validating a specific item in an array primitive?
+                 # Not supported by the Schema structure which defines fields by name.
+                 # If we are here, we are validating a leaf value. 
+                 # If the schema defines an array of primitives, we might need logic here.
+                 # For now, let's assume last_part is a field name in the current_schema.
+                 pass
+
+            field_schema = current_schema.fields.get(last_part)
+            if not field_schema:
+                if async_mode:
+                    future = asyncio.Future()
+                    future.set_result(True)
+                    return future
+                return True
+
+            # Use the already implemented validation logic below, but we need to ensure
+            # we are updating errors with the full path `field_name`.
+            # The logic below uses `field_schema` and `field_name` to update errors.
+            # We just found the correct `field_schema`.
+            # The `field_name` argument is already the full path "user.address.street".
+            # The `value` argument is the value of that leaf field.
+            
+            # Additional check: Conditional validation on the Nested Schema?
+            # The current implementation checks `field_schema.conditional_validation`.
+            # Does `field_schema.conditional_validation` expect the ROOT form data or the NESTED data?
+            # Conventionally in this library so far, everything operates on `self.form_data()` which is root.
+            # So passing root data is correct.
+            
+            # Fall through to normal validation logic using the resolved field_schema
+        else:
+            field_schema = self.schema.fields.get(field_name)
+
         if not field_schema:
             if async_mode:
                 future = asyncio.Future()
@@ -202,7 +339,10 @@ class Form:
                     return True
                 
                 for validation_func in field_schema.validation_functions:
+                    print(f"DEBUG: Running validator on '{processed_value}'")
                     error_message = validation_func(processed_value)
+                    if error_message:
+                        print(f"DEBUG: Error found: {error_message}")
                     if error_message:
                         field_errors.append(error_message)
                 
@@ -252,6 +392,7 @@ class Form:
                     field_errors.append(error_message)
 
             current_errors = self.errors()
+            
             if field_errors:
                 new_errors = {**current_errors, field_name: field_errors}
             else:
@@ -568,10 +709,10 @@ class Form:
         current_errors = self.errors()
         
         return {
-            "valid": field_name not in current_errors,
+            "is_valid": field_name not in current_errors,
             "errors": current_errors.get(field_name, []),
-            "touched": self.touched().get(field_name, False),
-            "dirty": self.dirty().get(field_name, False)
+            "is_touched": self.touched().get(field_name, False),
+            "is_dirty": self.dirty().get(field_name, False)
         }
         
     def get_nested_value(self, path: str) -> Any:
@@ -696,35 +837,71 @@ def create_form(form_schema: Schema, initial_values: Optional[Dict[str, Any]] = 
     processed_values = {}
     provided_values = initial_values or {}
 
-    # 1. Apply schema-defined initial values
-    # TODO: Handle nested schemas and arrays for initial values
-    for field_name, field_schema in form_schema.fields.items():
-        if field_schema.has_default:
-            value = field_schema.default_value_attr
-            # Apply trimming to schema default if needed
-            if field_schema.trim_flag and isinstance(value, str):
+    # 1. Apply schema-defined initial values recursively
+    def resolve_initial_values(schema: Schema, provided: Dict[str, Any]) -> Dict[str, Any]:
+        result = {}
+        
+        # Handle regular fields
+        for field_name, field_schema in schema.fields.items():
+            value = _UNSET
+            
+            # Check provided values first
+            if field_name in provided:
+                value = provided[field_name]
+            # Then check schema default
+            elif field_schema.has_default:
+                value = field_schema.default_value_attr
+            
+            # Apply trimming if value is found and is a string
+            if value is not _UNSET and field_schema.trim_flag and isinstance(value, str):
                 value = value.strip()
-            processed_values[field_name] = value
-        # else: field will be implicitly None or undefined unless provided below
+                
+            if value is not _UNSET:
+                result[field_name] = value
+            elif not field_schema.optional_flag:
+                 # Default to None for required/nullable fields if no value provided
+                result[field_name] = None
 
-    # 2. Override with explicitly provided initial values
-    for field_name, value in provided_values.items():
-         # Apply trimming to provided value if schema specifies it
-         field_schema = form_schema.fields.get(field_name)
-         processed_value = value
-         if field_schema and field_schema.trim_flag and isinstance(value, str):
-             processed_value = value.strip()
-         processed_values[field_name] = processed_value
+        # Handle nested schemas
+        for nested_name, nested_schema in schema.nested_schemas.items():
+            nested_provided = provided.get(nested_name, {})
+            # If provided value is None (and nullable), allow it. 
+            # But here we assume we want to construct the object structure.
+            if nested_provided is None: 
+                 result[nested_name] = None
+            else:
+                result[nested_name] = resolve_initial_values(nested_schema, nested_provided)
+                
+        # Handle field arrays
+        for array_name, field_array in schema.field_arrays.items():
+            array_provided = provided.get(array_name)
+            
+            if array_provided is None:
+                # If explicitly None or not provided, defaulting to empty list or None based on requirements
+                # Usually arrays default to empty list if not nullable.
+                # For now, let's look for a default on the array itself if we added one (we didn't yet in Schema)
+                # Or just default to []
+                if array_name in provided and array_provided is None:
+                     result[array_name] = None
+                else:
+                     result[array_name] = []
+            else:
+                # If provided, we need to process items if they are dicts against the item_schema
+                # But since arrays are dynamic, we mostly just take the provided values.
+                # Optionally we could apply defaults to *items* in the provided array if they are partial objects?
+                # For simplicity, we assume provided array items are "complete enough" or will be validated later.
+                # However, we SHOULD recurse if the array items are objects to ensure defaults within them are set.
+                 processed_array = []
+                 for item in array_provided:
+                     if isinstance(item, dict):
+                         processed_array.append(resolve_initial_values(field_array.item_schema, item))
+                     else:
+                         processed_array.append(item)
+                 result[array_name] = processed_array
 
-    # 3. Ensure all fields defined in the schema exist in the initial values,
-    #    even if they are None, unless they are optional.
-    #    This helps prevent KeyErrors later when accessing form_data().
-    for field_name, field_schema in form_schema.fields.items():
-        if field_name not in processed_values and not field_schema.optional_flag:
-             # If no initial value from schema or args, and not optional, default to None
-             # This assumes None is acceptable if not required, or if nullable.
-             # Required+non-nullable fields without initial values will fail validation later.
-             processed_values[field_name] = None
+        return result
+
+    processed_values = resolve_initial_values(form_schema, provided_values)
 
 
     form = Form(processed_values, form_schema)

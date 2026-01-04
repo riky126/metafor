@@ -272,6 +272,7 @@ class Schema:
         self.fields: Dict[str, Field] = {}
         self.nested_schemas: Dict[str, 'Schema'] = {}
         self.field_arrays: Dict[str, FieldArray] = {}
+        self.cross_validators: List[Callable[[Dict[str, Any]], Optional[Dict[str, str]]]] = []
 
     def field(self, name: str) -> Field:
         """Adds a field to the schema."""
@@ -296,6 +297,15 @@ class Schema:
         field_array = FieldArray(item_schema)
         self.field_arrays[name] = field_array
         return field_array
+        
+    def add_validator(self, validator: Callable[[Dict[str, Any]], Optional[Dict[str, List[str]]]]) -> 'Schema':
+        """
+        Adds a cross-field validator. 
+        The validator receives the entire form data and should return a dict of errors 
+        (field_name -> error_list) or None if valid.
+        """
+        self.cross_validators.append(validator)
+        return self
 
     def validate(self, form_data: Dict[str, Any]) -> Dict[str, List[str]]:
         """Validates the form data against the schema."""
@@ -407,6 +417,22 @@ class Schema:
                     for key, value in item_errors.items():
                         errors[f"{array_name}[{i}].{key}"] = value
         
+        # Run cross-field validators
+        for validator in self.cross_validators:
+            cross_errors = validator(form_data)
+            if cross_errors:
+                for field, field_errors in cross_errors.items():
+                    if field not in errors:
+                        errors[field] = []
+                    # Add new errors, avoiding duplicates
+                    if isinstance(field_errors, list):
+                        for err in field_errors:
+                            if err not in errors[field]:
+                                errors[field].append(err)
+                    else:
+                         if field_errors not in errors[field]:
+                            errors[field].append(field_errors)
+
         return errors
 
     async def validate_async(self, form_data: Dict[str, Any]) -> Dict[str, List[str]]:
