@@ -8,6 +8,7 @@ setup(
     install_requires=[
         "setuptools>=80.9.0",
         "wheel>=0.45.1",
+        "metafor",
         "watchdog",
         "libsass",
     ],
