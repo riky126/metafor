@@ -2,13 +2,13 @@
     "scopeName": "source.ptml",
     "patterns": [
         {
-            "include": "#python-block"
-        },
-        {
             "include": "#ptml-block"
         },
         {
             "include": "#style-block"
+        },
+        {
+            "include": "#python-block"
         },
         {
             "match": "<-",
@@ -20,33 +20,64 @@
     ],
     "repository": {
         "python-block": {
-            "begin": "((?:(?:<-)\\s*)?(?:@(?:component|props|val|value|context|App)(?:\\([^)]*\\))?\\s*)+)(\\{)",
+            "begin": "((?:(?:<-)\\s*)?(?:@[a-zA-Z_]\\w*(?:\\([^)]*\\))?\\s*)+)(\\{)",
             "beginCaptures": {
-                "1": { "patterns": [
-                    { "match": "<-", "name": "keyword.operator.chain.ptml" },
-                    { "include": "source.python" }
-                ] },
-                "2": { "name": "punctuation.section.block.begin.ptml" }
+                "1": {
+                    "patterns": [
+                        {
+                            "match": "<-",
+                            "name": "keyword.operator.chain.ptml"
+                        },
+                        {
+                            "include": "source.python"
+                        }
+                    ]
+                },
+                "2": {
+                    "name": "punctuation.section.block.begin.ptml"
+                }
             },
             "end": "\\}",
             "endCaptures": {
-                "0": { "name": "punctuation.section.block.end.ptml" }
+                "0": {
+                    "name": "punctuation.section.block.end.ptml"
+                }
             },
             "patterns": [
-                { "include": "#nested-braces" },
-                { "include": "#metafor-keywords" },
-                { "include": "source.python" }
+                {
+                    "include": "#nested-braces"
+                },
+                {
+                    "include": "#metafor-keywords"
+                },
+                {
+                    "include": "source.python"
+                }
             ]
         },
         "nested-braces": {
             "begin": "\\{",
-            "beginCaptures": { "0": { "include": "source.python" } },
+            "beginCaptures": {
+                "0": {
+                    "include": "source.python"
+                }
+            },
             "end": "\\}",
-            "endCaptures": { "0": { "include": "source.python" } },
+            "endCaptures": {
+                "0": {
+                    "include": "source.python"
+                }
+            },
             "patterns": [
-                { "include": "#nested-braces" },
-                { "include": "#metafor-keywords" },
-                { "include": "source.python" }
+                {
+                    "include": "#nested-braces"
+                },
+                {
+                    "include": "#metafor-keywords"
+                },
+                {
+                    "include": "source.python"
+                }
             ]
         },
         "metafor-keywords": {
@@ -60,12 +91,22 @@
         "ptml-block": {
             "begin": "(@ptml)\\s*(\\{)",
             "beginCaptures": {
-                "1": { "patterns": [{ "include": "source.python" }] },
-                "2": { "name": "punctuation.section.block.begin.ptml" }
+                "1": {
+                    "patterns": [
+                        {
+                            "include": "source.python"
+                        }
+                    ]
+                },
+                "2": {
+                    "name": "punctuation.section.block.begin.ptml"
+                }
             },
             "end": "\\}",
             "endCaptures": {
-                "0": { "name": "punctuation.section.block.end.ptml" }
+                "0": {
+                    "name": "punctuation.section.block.end.ptml"
+                }
             },
             "patterns": [
                 {
@@ -79,15 +120,23 @@
         "embedded-python": {
             "begin": "@\\{",
             "beginCaptures": {
-                "0": { "name": "punctuation.section.embedded.begin.ptml" }
+                "0": {
+                    "name": "punctuation.section.embedded.begin.ptml"
+                }
             },
             "end": "\\}",
             "endCaptures": {
-                "0": { "name": "punctuation.section.embedded.end.ptml" }
+                "0": {
+                    "name": "punctuation.section.embedded.end.ptml"
+                }
             },
             "patterns": [
-                { "include": "#nested-braces" },
-                { "include": "source.python" }
+                {
+                    "include": "#nested-braces"
+                },
+                {
+                    "include": "source.python"
+                }
             ]
         },
         "style-block": {
@@ -95,25 +144,41 @@
                 {
                     "begin": "(@style(?:\\([^)]*\\))?)\\s*(\\{)",
                     "beginCaptures": {
-                        "1": { 
+                        "1": {
                             "name": "meta.directive.style.ptml",
-                            "patterns": [{ "include": "source.python" }] 
+                            "patterns": [
+                                {
+                                    "include": "source.python"
+                                }
+                            ]
                         },
-                        "2": { "name": "punctuation.section.block.begin.ptml" }
+                        "2": {
+                            "name": "punctuation.section.block.begin.ptml"
+                        }
                     },
                     "end": "\\}",
                     "endCaptures": {
-                        "0": { "name": "punctuation.section.block.end.ptml" }
+                        "0": {
+                            "name": "punctuation.section.block.end.ptml"
+                        }
                     },
                     "patterns": [
-                        { "include": "source.css" }
+                        {
+                            "include": "source.css"
+                        }
                     ]
                 },
                 {
                     "match": "(@style(?:\\([^)]*\\))?)",
                     "name": "meta.directive.style.ptml",
                     "captures": {
-                        "1": { "patterns": [{ "include": "source.python" }] }
+                        "1": {
+                            "patterns": [
+                                {
+                                    "include": "source.python"
+                                }
+                            ]
+                        }
                     }
                 }
             ]
