@@ -38,29 +38,59 @@ def run_server(host, port):
         last_mtimes = get_file_mtimes(WATCH_DIR)
         
         while True:
-            time.sleep(1)
-            current_mtimes = get_file_mtimes(WATCH_DIR)
+            time.sleep(0.3)  # Improved responsiveness
             
-            changed = False
-            for path, mtime in current_mtimes.items():
-                if path not in last_mtimes or mtime > last_mtimes[path]:
-                    changed = True
-                    break
-            
-            if changed:
-                print("\nChanges detected. Rebuilding...")
-                try:
-                    build_project(WATCH_DIR, output_type='py')
-                    print("Build finished. Watching...")
-                    state['last_build_time'] = time.time()
-                    
-                    # Notify all waiting clients
-                    with build_condition:
-                        build_condition.notify_all()
-                except Exception as e:
-                    print(f"\033[91mBuild failed: {e}\033[0m")
+            try:
+                current_mtimes = get_file_mtimes(WATCH_DIR)
                 
-                last_mtimes = current_mtimes
+                changed = False
+                
+                # Check for modifications and additions
+                for path, mtime in current_mtimes.items():
+                    if path not in last_mtimes or mtime > last_mtimes[path]:
+                        changed = True
+                        break
+                
+                # Check for deletions
+                if not changed:
+                    for path in last_mtimes:
+                        if path not in current_mtimes:
+                            changed = True
+                            break
+                
+                if changed:
+                    # Debounce: Wait for file operations to settle
+                    # If changes happen rapidly, keep waiting until they stop for a clearer window
+                    settled = False
+                    stabilize_start = time.time()
+                    
+                    while not settled:
+                        time.sleep(0.1)
+                        check_mtimes = get_file_mtimes(WATCH_DIR)
+                        if check_mtimes == current_mtimes:
+                            settled = True
+                        else:
+                            current_mtimes = check_mtimes
+                            # Timeout to prevent infinite waiting if constant changes
+                            if time.time() - stabilize_start > 2.0:
+                                settled = True
+
+                    print("\nChanges detected. Rebuilding...")
+                    try:
+                        build_project(WATCH_DIR, output_type='py')
+                        print("Build finished. Watching...")
+                        state['last_build_time'] = time.time()
+                        
+                        # Notify all waiting clients
+                        with build_condition:
+                            build_condition.notify_all()
+                    except Exception as e:
+                        print(f"\033[91mBuild failed: {e}\033[0m")
+                    
+                    last_mtimes = current_mtimes
+            except Exception as e:
+                print(f"Watcher error: {e}")
+                time.sleep(1) # Backoff on error
 
     watcher_thread = threading.Thread(target=run_watcher, daemon=True)
     watcher_thread.start()

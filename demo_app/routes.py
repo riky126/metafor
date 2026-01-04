@@ -7,7 +7,7 @@ from components.counter import Counter
 from pages.profile.profile_layout import ProfileLayout
 from pages.profile.profile import Profile
 from pages.settings import Settings
-from route_guard import is_user_logged_in
+from route_guard import is_user_logged_in, route_guard
 
 # Define routes
 routes = [
@@ -27,3 +27,4 @@ routes = [
 router = Router(routes, initial_route="/", mode=Router.HASH_MODE)
 
 router.before_routing(is_user_logged_in)
+router.before_routing(route_guard)
