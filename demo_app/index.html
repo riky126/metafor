@@ -43,9 +43,7 @@
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('serviceWorker.js')
                     .then(registration => {
-                        document.addEventListener('visibilitychange', () => {
-                            if (!document.hidden) registration.update();
-                        });
+                        console.log('ServiceWorker registration successful');
                     })
                     .catch(error => console.error('Service Worker registration failed:', error));
                 

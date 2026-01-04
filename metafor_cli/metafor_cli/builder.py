@@ -16,6 +16,8 @@ if 'pyodide.ffi' not in sys.modules:
 current_dir = os.path.dirname(os.path.abspath(__file__))
 # metafor_cli/metafor_cli/builder.py -> metafor_cli/metafor_cli -> metafor_cli -> root
 project_root = os.path.dirname(os.path.dirname(current_dir))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 # Import bundler from the local package
 from .bundler import MetaforBundler
@@ -25,10 +27,8 @@ def build_project(base_dir, output_type='pyc'):
     out_dir = os.path.join(base_dir, "build")
     pyscript_toml = os.path.join(base_dir, "pyscript.toml")
     
-    # Framework dir is the installed metafor package location
-    # We can find it via the module
-    import metafor
-    framework_dir = os.path.dirname(os.path.abspath(metafor.__file__))
+    # Framework dir is the local development version in the root
+    framework_dir = os.path.join(project_root, "metafor")
     
     use_pyc = (output_type == 'pyc')
 
