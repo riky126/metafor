@@ -27,8 +27,25 @@ def build_project(base_dir, output_type='pyc'):
     out_dir = os.path.join(base_dir, "build")
     pyscript_toml = os.path.join(base_dir, "pyscript.toml")
     
-    # Framework dir is the local development version in the root
-    framework_dir = os.path.join(project_root, "metafor")
+    # Priority 1: Check relative to the app being built (dev repo use case)
+    # This allows working with local framework changes without reinstalling metafor package
+    framework_dir = None
+    potential_framework = os.path.abspath(os.path.join(base_dir, "../metafor"))
+    if os.path.exists(os.path.join(potential_framework, "__init__.py")):
+         framework_dir = potential_framework
+         print(f"Using framework from local path: {framework_dir}")
+
+    # Priority 2: Use installed package
+    if not framework_dir:
+        try:
+            import metafor
+            framework_dir = os.path.dirname(metafor.__file__)
+            print(f"Using framework from installed package: {framework_dir}")
+        except ImportError as e:
+            print(f"DEBUG: Could not import metafor: {e}")
+            # Fallback to local development version in the root (for CLI dev)
+            framework_dir = os.path.join(project_root, "metafor")
+            print(f"Using fallback framework path: {framework_dir}")
     
     use_pyc = (output_type == 'pyc')
 

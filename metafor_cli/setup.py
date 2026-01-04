@@ -9,6 +9,7 @@ setup(
         "setuptools>=80.9.0",
         "wheel>=0.45.1",
         "watchdog",
+        "libsass",
     ],
     entry_points={
         "console_scripts": [

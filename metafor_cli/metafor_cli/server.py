@@ -10,7 +10,7 @@ def run_server(host, port):
     project_path = os.getcwd()
     
     # Start watcher in a separate thread
-    WATCH_EXTENSIONS = {'.py', '.ptml', '.js', '.jsx', '.css', '.html', '.toml'}
+    WATCH_EXTENSIONS = {'.py', '.ptml', '.js', '.jsx', '.css', '.html', '.toml', '.scss', '.sass'}
     IGNORE_DIRS = {'build', '__pycache__', '.git', '.idea', '.vscode', 'node_modules'}
     WATCH_DIR = project_path
     

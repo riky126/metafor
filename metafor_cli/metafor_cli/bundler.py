@@ -196,14 +196,37 @@ class MetaforBundler:
                     target_dir = self.out_dir / rel_path.parent
                     if not target_dir.exists(): target_dir.mkdir(parents=True)
                     
-                    target_file = target_dir / file
-                    if self.cache.is_changed(file_path) or not target_file.exists():
-                        shutil.copy2(file_path, target_dir)
-                        self.cache.update_cache(file_path)
-                    
-                    # Track assets for [files] section
-                    rel_to_out = target_file.relative_to(self.out_dir)
-                    self.generated_files.append(rel_to_out)
+                    if file.endswith('.scss') or file.endswith('.sass'):
+                        target_filename = file_path.with_suffix('.css').name
+                        target_file = target_dir / target_filename
+                        
+                        if self.cache.is_changed(file_path) or not target_file.exists():
+                            try:
+                                import sass
+                                with open(file_path, 'r') as f:
+                                    scss_content = f.read()
+                                css_content = sass.compile(string=scss_content)
+                                with open(target_file, 'w') as f:
+                                    f.write(css_content)
+                                self.cache.update_cache(file_path)
+                                print(f"  → Compiled {rel_path} to CSS")
+                            except ImportError:
+                                print("Warning: libsass not installed. Skipping Sass compilation.")
+                            except Exception as e:
+                                print(f"Error compiling {rel_path}: {e}")
+                                
+                        # Track assets for [files] section
+                        rel_to_out = target_file.relative_to(self.out_dir)
+                        self.generated_files.append(rel_to_out)
+                    else:
+                        target_file = target_dir / file
+                        if self.cache.is_changed(file_path) or not target_file.exists():
+                            shutil.copy2(file_path, target_dir)
+                            self.cache.update_cache(file_path)
+                        
+                        # Track assets for [files] section
+                        rel_to_out = target_file.relative_to(self.out_dir)
+                        self.generated_files.append(rel_to_out)
 
         # Prune deleted files from staging
         # We only prune files that match patterns we manage (.py) and are not in framework
@@ -372,6 +395,8 @@ class MetaforBundler:
                     continue 
                 package_name = str(rel_path).replace(os.sep, ".")
                 all_packages.append(package_name)
+        
+        print(f"Discovered packages for wheel: {all_packages}")
 
         # Cleanup pass: Enforce use_pyc setting
         if self.use_pyc:
