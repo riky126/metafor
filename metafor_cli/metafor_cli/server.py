@@ -43,22 +43,27 @@ def run_server(host, port):
             try:
                 current_mtimes = get_file_mtimes(WATCH_DIR)
                 
-                changed = False
+                changed_files = []
                 
                 # Check for modifications and additions
                 for path, mtime in current_mtimes.items():
                     if path not in last_mtimes or mtime > last_mtimes[path]:
-                        changed = True
-                        break
+                        try:
+                            rel_path = os.path.relpath(path, WATCH_DIR)
+                            changed_files.append(rel_path)
+                        except:
+                            changed_files.append(path)
                 
                 # Check for deletions
-                if not changed:
-                    for path in last_mtimes:
-                        if path not in current_mtimes:
-                            changed = True
-                            break
+                for path in last_mtimes:
+                    if path not in current_mtimes:
+                        try:
+                            rel_path = os.path.relpath(path, WATCH_DIR)
+                            changed_files.append(f"{rel_path} (deleted)")
+                        except:
+                            changed_files.append(f"{path} (deleted)")
                 
-                if changed:
+                if changed_files:
                     # Debounce: Wait for file operations to settle
                     # If changes happen rapidly, keep waiting until they stop for a clearer window
                     settled = False
@@ -71,11 +76,35 @@ def run_server(host, port):
                             settled = True
                         else:
                             current_mtimes = check_mtimes
+                            # Update changed_files with new changes during debounce (simple re-check or just append?)
+                            # Simpler to just proceed with what we caught or maybe re-scan?
+                            # Re-scanning is safer to get the final set.
+                            changed_files = [] 
+                            # Re-run detection logic for accurate list after settle
+                            for path, mtime in current_mtimes.items():
+                                if path not in last_mtimes or mtime > last_mtimes[path]:
+                                    try:
+                                        rel_path = os.path.relpath(path, WATCH_DIR)
+                                        changed_files.append(rel_path)
+                                    except:
+                                        changed_files.append(path)
+                            for path in last_mtimes:
+                                if path not in current_mtimes:
+                                    try:
+                                        rel_path = os.path.relpath(path, WATCH_DIR)
+                                        changed_files.append(f"{rel_path} (deleted)")
+                                    except:
+                                        changed_files.append(f"{path} (deleted)")
+
                             # Timeout to prevent infinite waiting if constant changes
                             if time.time() - stabilize_start > 2.0:
                                 settled = True
 
-                    print("\nChanges detected. Rebuilding...")
+                    print("\nChanges detected in:")
+                    for f in changed_files:
+                        print(f" - {f}")
+                    print("Rebuilding...")
+                    
                     try:
                         build_project(WATCH_DIR, output_type='py')
                         print("Build finished. Watching...")

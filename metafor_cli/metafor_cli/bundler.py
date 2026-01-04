@@ -36,6 +36,11 @@ class BuildCache:
         file_path_str = str(file_path)
         current_hash = self.get_hash(file_path)
         cached_hash = self.cache.get(file_path_str)
+        
+        # Debug why it thinks it changed
+        # if current_hash != cached_hash:
+        #     print(f"[DEBUG] Changed: {file_path.name} | Old: {cached_hash} | New: {current_hash}")
+        
         return current_hash != cached_hash
 
     def update_cache(self, file_path):
@@ -44,7 +49,7 @@ class BuildCache:
 
 class MetaforBundler:
     def __init__(self, src_dir=".", out_dir="build", pyscript_toml=None, framework_dir=None, use_pyc=True):
-        self.src_dir = pathlib.Path(src_dir)
+        self.src_dir = pathlib.Path(src_dir).resolve()
         self.out_dir = pathlib.Path(out_dir)
         self.pyscript_toml = pathlib.Path(pyscript_toml) if pyscript_toml else None
         self.framework_dir = pathlib.Path(framework_dir) if framework_dir else None
@@ -95,9 +100,13 @@ class MetaforBundler:
 
         print(f"Building from {self.src_dir} to {self.out_dir}...")
         
-        # Staging directory for wheel content
-        wheel_staging = self.out_dir / "_wheel_staging"
+        # Staging directory for persistent intermediate files (compiled PTML -> PY, copies of PY)
+        # We do NOT delete this, allowing incremental updates.
+        wheel_staging = self.out_dir / "_incremental_staging"
+        print(f"--- INCREMENTAL BUNDLER v2 ---")
+        print(f"Staging dir: {wheel_staging.resolve()}")
         wheel_staging.mkdir(parents=True, exist_ok=True)
+        print(f"Staging exists? {wheel_staging.exists()}")
 
         # Copy framework to staging (only if framework changed or doesn't exist)
         if self.framework_dir and self.framework_dir.exists():
@@ -130,6 +139,18 @@ class MetaforBundler:
         # Collect tasks for parallel execution
         ptml_tasks = []
         
+        # Track expected files in staging to cleanup deletions
+        # Set of relative paths from staging root
+        expected_staging_files = set()
+        if self.framework_dir and self.framework_dir.exists():
+            # Add framework files to expected
+            framework_name = self.framework_dir.name
+            for root, dirs, files in os.walk(wheel_staging / framework_name):
+                # This is approximate, ideally we scan source structure.
+                # But framework is copied wholesale, so we assume it's valid if we just synced it.
+                # We can just ignore framework dir for pruning source files.
+                pass
+        
         # Walk through source directory
         for root, dirs, files in os.walk(self.src_dir):
             # Skip build directory and hidden directories
@@ -141,15 +162,13 @@ class MetaforBundler:
                 file_path = pathlib.Path(root) / file
                 rel_path = file_path.relative_to(self.src_dir)
                 
-                # Exclude specific files from processing (they are handled separately or ignored)
+                # Exclude specific files from processing
                 if file == 'pyscript.toml' or file == 'index.html' or file == 'build.py' or file.startswith('build_') or file == 'main.py' or file == 'setup.py':
-                    # Copy index.html, pyscript.toml, and main.py to build root, but not to wheel
                     if file == 'index.html' or file == 'pyscript.toml' or file == 'main.py':
                          target_file = self.out_dir / rel_path
                          if self.cache.is_changed(file_path) or not target_file.exists():
                              shutil.copy2(file_path, target_file)
                              self.cache.update_cache(file_path)
-                         # Do not track these for [files] section as requested
                     continue
                 
                 # Determine target: wheel staging for code, build dir for assets
@@ -161,11 +180,15 @@ class MetaforBundler:
                     if file.endswith('.ptml'):
                         target_filename = file_path.with_suffix('.py').name
                         target_file = target_dir / target_filename
+                        expected_staging_files.add(str((target_dir / target_filename).relative_to(wheel_staging)))
+                        
                         if self.cache.is_changed(file_path) or not target_file.exists():
                             ptml_tasks.append((file_path, target_dir))
                     else:
                         if not file.startswith('test_'):
                              target_file = target_dir / file
+                             expected_staging_files.add(str((target_dir / file).relative_to(wheel_staging)))
+                             
                              if self.cache.is_changed(file_path) or not target_file.exists():
                                  shutil.copy2(file_path, target_dir)
                                  self.cache.update_cache(file_path)
@@ -183,6 +206,24 @@ class MetaforBundler:
                     rel_to_out = target_file.relative_to(self.out_dir)
                     self.generated_files.append(rel_to_out)
 
+        # Prune deleted files from staging
+        # We only prune files that match patterns we manage (.py) and are not in framework
+        # (Assuming framework dir name is unique/known)
+        framework_prefix = self.framework_dir.name if (self.framework_dir and self.framework_dir.exists()) else "___nonexistent___"
+        
+        for root, dirs, files in os.walk(wheel_staging):
+             rel_root = pathlib.Path(root).relative_to(wheel_staging)
+             if str(rel_root).startswith(framework_prefix):
+                 continue
+                 
+             for file in files:
+                 if file.endswith('.py'):
+                     rel_file = rel_root / file
+                     if str(rel_file) not in expected_staging_files:
+                         # File was deleted from source
+                         # print(f"Pruning deleted file: {rel_file}")
+                         os.remove(pathlib.Path(root) / file)
+
         # Execute PTML compilation in parallel
         if ptml_tasks:
             print(f"Compiling {len(ptml_tasks)} PTML file(s)...")
@@ -191,43 +232,75 @@ class MetaforBundler:
                 for future in concurrent.futures.as_completed(futures):
                     try:
                         file_path = future.result()
+                        rel_path = file_path.relative_to(self.src_dir)
+                        print(f"  → Compiled {rel_path}")
                         self.cache.update_cache(file_path)
                     except Exception as e:
                         print(f"Compilation failed: {e}")
-                        # Abort build on error?
-                        # For now, we continue but maybe we should stop.
-                        # Ideally we stop.
                         raise e
         else:
-            print("No PTML files to compile (all up to date)")
+            # print("No PTML files to compile (all up to date)")
+            pass
 
-        # Create Wheel from staging (only if staging has changes or wheel doesn't exist)
+        # Compile to .pyc in staging incrementally if needed
+        # We do this IN STAGING so it persists
+        if self.use_pyc:
+             import py_compile
+             for root, dirs, files in os.walk(wheel_staging):
+                for file in files:
+                    if file.endswith(".py") and file != "setup.py":
+                        file_path = pathlib.Path(root) / file
+                        pyc_path = file_path.with_suffix(".pyc")
+                        
+                        should_compile = False
+                        if not pyc_path.exists():
+                            should_compile = True
+                        else:
+                            if file_path.stat().st_mtime > pyc_path.stat().st_mtime:
+                                should_compile = True
+                        
+                        if should_compile:
+                            try:
+                                # print(f"Compiling {file_path} -> {pyc_path}")
+                                py_compile.compile(str(file_path), cfile=str(pyc_path), doraise=True)
+                            except Exception as e:
+                                print(f"Failed to compile {file_path}: {e}")
+
+        # Create Wheel from staging
+        # We COPY staging to a temp build dir because _create_wheel is destructive (pyc compilation)
+        wheel_build_dir = self.out_dir / "_wheel_build_tmp"
+        if wheel_build_dir.exists(): shutil.rmtree(wheel_build_dir)
+        shutil.copytree(wheel_staging, wheel_build_dir)
+
         wheel_filename = f"{self.setup_config.get('name', 'metafor_app')}-{self.setup_config.get('version', '0.1.0')}-py3-none-any.whl"
         wheel_path = public_dir / wheel_filename
         
-        # Check if wheel needs rebuilding by checking if staging dir has any .py/.pyc files
-        # that are newer than the wheel, or if wheel doesn't exist
+        # Check if wheel needs rebuilding
+        # Since we synced staging, any change there implies we need a new wheel
+        # Or if previous wheel is missing
         needs_wheel_rebuild = not wheel_path.exists()
+        
+        # Optimization: We could track if we actually copied/compiled anything above.
+        # But we also need to check if existing wheel is older than staging (in case of interrupted build)
         if not needs_wheel_rebuild:
-            # Check if any files in staging are newer than the wheel
-            wheel_mtime = wheel_path.stat().st_mtime
-            for root, dirs, files in os.walk(wheel_staging):
+            # Check mtimes
+             wheel_mtime = wheel_path.stat().st_mtime
+             for root, dirs, files in os.walk(wheel_build_dir):
                 for file in files:
-                    if file.endswith(('.py', '.pyc')):
-                        file_path = pathlib.Path(root) / file
-                        if file_path.stat().st_mtime > wheel_mtime:
-                            needs_wheel_rebuild = True
-                            break
-                if needs_wheel_rebuild:
-                    break
+                    file_path = pathlib.Path(root) / file
+                    if file_path.stat().st_mtime > wheel_mtime:
+                        needs_wheel_rebuild = True
+                        break
+                if needs_wheel_rebuild: break
         
         if needs_wheel_rebuild:
-            self._create_wheel(wheel_staging, public_dir)
+            # Pass the TEMP build dir to create_wheel
+            self._create_wheel(wheel_build_dir, public_dir)
         else:
-            print(f"Wheel up to date: {wheel_filename}")
+            print(f"Wheel up to date.")
         
-        # Cleanup staging
-        shutil.rmtree(wheel_staging)
+        # Cleanup TEMP build dir, but KEEP staging
+        shutil.rmtree(wheel_build_dir)
         
         # Save cache
         self.cache.save()
@@ -244,8 +317,7 @@ class MetaforBundler:
 
     def _compile_ptml_task(self, task):
         file_path, target_dir = task
-        rel_path = file_path.relative_to(self.src_dir)
-        print(f"  → Compiling {rel_path}...")
+        # print statement removed to avoid subprocess stdout issues
         try:
             with open(file_path, 'r') as f:
                 source = f.read()
@@ -302,20 +374,19 @@ class MetaforBundler:
                 package_name = str(rel_path).replace(os.sep, ".")
                 all_packages.append(package_name)
 
-        # Second pass: Compile everything to .pyc and remove .py ONLY if use_pyc is True
+        # Cleanup pass: Enforce use_pyc setting
         if self.use_pyc:
-            # We walk the entire staging dir
-            for root, dirs, files in os.walk(staging_dir):
+            # We want .pyc, so remove .py
+             for root, dirs, files in os.walk(staging_dir):
                 for file in files:
                     if file.endswith(".py") and file != "setup.py":
-                        file_path = pathlib.Path(root) / file
-                        pyc_path = file_path.with_suffix(".pyc")
-                        # print(f"Compiling {file_path} -> {pyc_path}")
-                        try:
-                            py_compile.compile(str(file_path), cfile=str(pyc_path), doraise=True)
-                            os.remove(file_path)
-                        except Exception as e:
-                            print(f"Failed to compile {file_path}: {e}")
+                        os.remove(pathlib.Path(root) / file)
+        else:
+             # We want .py, so remove .pyc
+             for root, dirs, files in os.walk(staging_dir):
+                for file in files:
+                    if file.endswith(".pyc"):
+                        os.remove(pathlib.Path(root) / file)
         
         # If we found no packages but we have modules, that's fine.
         
