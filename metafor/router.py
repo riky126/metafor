@@ -66,14 +66,20 @@ class Route:
             except:
                 raise Exception("'path' argument is required for page component, ensure @page('som_path') decorator called with path.")
 
-            # Merge parent meta into child meta (parent meta first, child meta can override)
-            route.meta = {**self.meta, **route.meta}
+            # Merge parent meta into child meta recursively
+            route._update_meta_recursive(self.meta)
             
             normalized_path = child_path.lstrip('/')
             regex_path, regex_compiled = _str_to_regex_path(normalized_path)
             route.path = regex_path
             compiled_children[regex_compiled] = route
         return compiled_children
+
+    def _update_meta_recursive(self, parent_meta: Dict[str, Any]):
+        """Recursively update meta for this route and its children."""
+        self.meta = {**parent_meta, **self.meta}
+        for child in self.children.values():
+            child._update_meta_recursive(self.meta)
 
 
 class Router:
