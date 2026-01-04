@@ -1,5 +1,6 @@
 @component("MyApp") @props {
     from js import console, Object
+    
     from pyodide.ffi import to_js
     from metafor.core import create_signal
     from metafor.hooks import use_context
@@ -47,7 +48,7 @@
 
     # Use a higher version to force schema update
     db_api = index_db("MyApp", on_connected=on_connect, on_upgrade=setup_schema, version=1)  # Increased version
-
+    
     def increment():
         set_count(count() + 1)
 

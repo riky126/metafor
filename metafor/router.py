@@ -740,7 +740,8 @@ class Router:
         """Create a rendering function for the current route hierarchy."""
         asyncio.create_task(self.intialize())
 
-        def render():
+        @component()
+        def Render(**props):
             current_route_state = track(lambda: self.current_route())
             # current_route_state is a dict {"path": "...", "ts": ...}
             # We track the whole object so any change (including just ts) triggers re-render
@@ -794,7 +795,7 @@ class Router:
 
             return NotFound()
 
-        return render
+        return Render
 
     def link(self, path: str, text: str, query_params: Optional[Dict[str, str]] = None,
              active_class: str = None, exact_match: bool = False):
