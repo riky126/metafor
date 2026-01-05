@@ -261,8 +261,9 @@ class MetaforBundler:
 
         # Execute PTML compilation in parallel
         if ptml_tasks:
-            print(f"Compiling {len(ptml_tasks)} PTML file(s)...")
-            with concurrent.futures.ProcessPoolExecutor() as executor:
+            # print(f"Compiling {len(ptml_tasks)} PTML file(s)...")
+            # Use ThreadPoolExecutor instead of ProcessPool to avoid process spawn overhead/zombies
+            with concurrent.futures.ThreadPoolExecutor() as executor:
                 futures = [executor.submit(self._compile_ptml_task, task) for task in ptml_tasks]
                 for future in concurrent.futures.as_completed(futures):
                     try:
@@ -504,9 +505,15 @@ setup(
             sys_path_str = os.pathsep.join(abs_sys_path)
             env["PYTHONPATH"] = f"{sys_path_str}{os.pathsep}{current_pythonpath}"
             
-            subprocess.check_call([
-                sys.executable, "setup.py", "bdist_wheel", "--dist-dir", str(output_dir.absolute())
-            ], cwd=staging_dir, env=env)
+            # Run build silently
+            result = subprocess.run([
+                sys.executable, "setup.py", "-q", "bdist_wheel", "--dist-dir", str(output_dir.absolute())
+            ], cwd=staging_dir, env=env, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                print(result.stdout)
+                print(result.stderr)
+                raise Exception("Build failed")
             
             # Manually add top-level .pyc files to the wheel ONLY if use_pyc is True
             if self.use_pyc:

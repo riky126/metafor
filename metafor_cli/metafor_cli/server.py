@@ -19,109 +19,73 @@ def run_server(host, port):
     # Condition to notify waiting clients
     build_condition = threading.Condition()
 
-    def get_file_mtimes(root_dir):
-        mtimes = {}
-        for root, dirs, files in os.walk(root_dir):
-            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
-            for file in files:
-                ext = os.path.splitext(file)[1]
-                if ext in WATCH_EXTENSIONS:
-                    path = os.path.join(root, file)
-                    try:
-                        mtimes[path] = os.path.getmtime(path)
-                    except OSError:
-                        pass
-        return mtimes
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
 
-    def run_watcher():
-        print(f"Watching {WATCH_DIR} for changes...")
-        last_mtimes = get_file_mtimes(WATCH_DIR)
-        
-        while True:
-            time.sleep(0.3)  # Improved responsiveness
+    # Watchdog Event Handler with Debouncing
+    class DebouncedBuildHandler(FileSystemEventHandler):
+        def __init__(self, callback, debounce_interval=0.1):
+            self.callback = callback
+            self.debounce_interval = debounce_interval
+            self.timer = None
             
-            try:
-                current_mtimes = get_file_mtimes(WATCH_DIR)
-                
-                changed_files = []
-                
-                # Check for modifications and additions
-                for path, mtime in current_mtimes.items():
-                    if path not in last_mtimes or mtime > last_mtimes[path]:
-                        try:
-                            rel_path = os.path.relpath(path, WATCH_DIR)
-                            changed_files.append(rel_path)
-                        except:
-                            changed_files.append(path)
-                
-                # Check for deletions
-                for path in last_mtimes:
-                    if path not in current_mtimes:
-                        try:
-                            rel_path = os.path.relpath(path, WATCH_DIR)
-                            changed_files.append(f"{rel_path} (deleted)")
-                        except:
-                            changed_files.append(f"{path} (deleted)")
-                
-                if changed_files:
-                    # Debounce: Wait for file operations to settle
-                    # If changes happen rapidly, keep waiting until they stop for a clearer window
-                    settled = False
-                    stabilize_start = time.time()
-                    
-                    while not settled:
-                        time.sleep(0.1)
-                        check_mtimes = get_file_mtimes(WATCH_DIR)
-                        if check_mtimes == current_mtimes:
-                            settled = True
-                        else:
-                            current_mtimes = check_mtimes
-                            # Update changed_files with new changes during debounce (simple re-check or just append?)
-                            # Simpler to just proceed with what we caught or maybe re-scan?
-                            # Re-scanning is safer to get the final set.
-                            changed_files = [] 
-                            # Re-run detection logic for accurate list after settle
-                            for path, mtime in current_mtimes.items():
-                                if path not in last_mtimes or mtime > last_mtimes[path]:
-                                    try:
-                                        rel_path = os.path.relpath(path, WATCH_DIR)
-                                        changed_files.append(rel_path)
-                                    except:
-                                        changed_files.append(path)
-                            for path in last_mtimes:
-                                if path not in current_mtimes:
-                                    try:
-                                        rel_path = os.path.relpath(path, WATCH_DIR)
-                                        changed_files.append(f"{rel_path} (deleted)")
-                                    except:
-                                        changed_files.append(f"{path} (deleted)")
+        def _trigger_build(self):
+            if self.timer:
+                self.timer.cancel()
+            self.timer = threading.Timer(self.debounce_interval, self._execute_build)
+            self.timer.start()
+            
+        def _execute_build(self):
+            self.callback()
+            
+        def on_any_event(self, event):
+            if event.is_directory:
+                return
 
-                            # Timeout to prevent infinite waiting if constant changes
-                            if time.time() - stabilize_start > 2.0:
-                                settled = True
+            # Strict Ignoring
+            path = event.src_path
+            # Check for ignored directories in path
+            # We must explicitly ignore .egg-info here too, as it was the cause of the loop
+            if any(part in path.split(os.sep) for part in IGNORE_DIRS) or '.egg-info' in path:
+                return
+            
+            # Check for interesting extensions
+            ext = os.path.splitext(path)[1]
+            if ext in WATCH_EXTENSIONS:
+                # Ignore .py files if they are derived from .ptml
+                if ext == '.py':
+                     ptml_path = os.path.splitext(path)[0] + '.ptml'
+                     if os.path.exists(ptml_path):
+                         return
+                
+                print(f"File changed: {os.path.relpath(path, WATCH_DIR)}")
+                self._trigger_build()
 
-                    print("\nChanges detected in:")
-                    for f in changed_files:
-                        print(f" - {f}")
-                    print("Rebuilding...")
-                    
-                    try:
-                        build_project(WATCH_DIR, output_type='py')
-                        print("Build finished. Watching...")
-                        state['last_build_time'] = time.time()
-                        
-                        # Notify all waiting clients
-                        with build_condition:
-                            build_condition.notify_all()
-                    except Exception as e:
-                        print(f"\033[91mBuild failed: {e}\033[0m")
-                    
-                    last_mtimes = current_mtimes
-            except Exception as e:
-                print(f"Watcher error: {e}")
-                time.sleep(1) # Backoff on error
+    def run_build():
+        print("Rebuilding...")
+        try:
+            build_project(WATCH_DIR, output_type='py')
+            print("Build finished. Watching...")
+            state['last_build_time'] = time.time()
+            with build_condition:
+                build_condition.notify_all()
+        except Exception as e:
+             print(f"\033[91mBuild failed: {e}\033[0m")
 
-    watcher_thread = threading.Thread(target=run_watcher, daemon=True)
+    def start_watcher():
+        print(f"Watching {WATCH_DIR} for changes...")
+        event_handler = DebouncedBuildHandler(run_build)
+        observer = Observer()
+        observer.schedule(event_handler, WATCH_DIR, recursive=True)
+        observer.start()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            observer.stop()
+        observer.join()
+
+    watcher_thread = threading.Thread(target=start_watcher, daemon=True)
     watcher_thread.start()
 
     class Handler(server.SimpleHTTPRequestHandler):
@@ -132,7 +96,7 @@ def run_server(host, port):
                 self.send_response(200)
                 self.send_header("Content-type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
-                self.send_header("Connection", "keep-alive")
+                self.send_header("Connection", "close")
                 self.end_headers()
                 
                 # Wait for build to finish
@@ -192,6 +156,25 @@ def run_server(host, port):
 
             return super().do_GET()
 
+        def log_request(self, code='-', size='-'):
+            if isinstance(code, int):
+                if 200 <= code < 300:
+                    code = f"\033[92m{code}\033[0m"
+                elif 400 <= code < 500:
+                    # Orange for Client Errors
+                    code = f"\033[38;5;208m{code}\033[0m" 
+                elif code >= 500:
+                    # Red for Server Errors
+                    code = f"\033[91m{code}\033[0m"
+            self.log_message('"%s" %s', self.requestline, str(code))
+
+        def log_message(self, format, *args):
+            # Override to prevent sanitization of control characters which might happen in base class
+            sys.stderr.write("%s - - [%s] %s\n" %
+                            (self.client_address[0],
+                             self.log_date_time_string(),
+                             format % args))
+
         def end_headers(self):
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.send_header("Pragma", "no-cache")
@@ -202,7 +185,8 @@ def run_server(host, port):
         allow_reuse_address = True
 
     httpd = ReusingThreadingHTTPServer((host, port), Handler)
-    print(f"Serving at port {host or '*'}:{port}")
+    display_host = host or 'localhost'
+    print(f"\033[92mServing at http://{display_host}:{port}\033[0m")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
