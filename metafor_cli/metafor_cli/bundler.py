@@ -259,9 +259,8 @@ class MetaforBundler:
                          # print(f"Pruning deleted file: {rel_file}")
                          os.remove(pathlib.Path(root) / file)
 
-        # Execute PTML compilation in parallel
         if ptml_tasks:
-            # print(f"Compiling {len(ptml_tasks)} PTML file(s)...")
+            print(f"Compiling {len(ptml_tasks)} PTML file(s)...")
             # Use ThreadPoolExecutor instead of ProcessPool to avoid process spawn overhead/zombies
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 futures = [executor.submit(self._compile_ptml_task, task) for task in ptml_tasks]
@@ -352,7 +351,7 @@ class MetaforBundler:
                 self._update_pyscript_toml(target_toml)
         
         # Print summary
-        print("✓ Build complete")
+        print("\033[92m✓ Build complete\033[0m")
 
     def _compile_ptml_task(self, task):
         file_path, target_dir = task
