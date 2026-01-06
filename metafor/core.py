@@ -291,6 +291,9 @@ class ReactiveList(list):
             console.error(f"{message}: {str(error)}")
 
 class Signal:
+    __slots__ = ('_deep', '_subscribers', '_before_callbacks', '_after_callbacks', 
+                 '_prop_subscribers', '_disposed', '_value', '__weakref__')
+
     def __init__(self, initial_value: Any, deep: bool = False):
         self._deep = deep
         self._subscribers = set()
@@ -311,21 +314,23 @@ class Signal:
     
     def _notify_change(self, prop=None):
         old_value = self._value
-        try:
-            for callback in self._before_callbacks:
-                callback(old_value, old_value)
-        except Exception as e:
-            self._handle_error(e, "Error in _before_callbacks")
+        if self._before_callbacks:
+            try:
+                for callback in self._before_callbacks:
+                    callback(old_value, old_value)
+            except Exception as e:
+                self._handle_error(e, "Error in _before_callbacks")
         
-        subscribers_snapshot = list(self._subscribers)
-        for subscriber in subscribers_snapshot:
-            if subscriber is not None:
-                try:
-                    subscriber.notify(self, old_value, old_value, prop)
-                except Exception as e:
-                    self._handle_error(e, f"Error notifying subscriber: {subscriber}")
+        if self._subscribers:
+            subscribers_snapshot = list(self._subscribers)
+            for subscriber in subscribers_snapshot:
+                if subscriber is not None:
+                    try:
+                        subscriber.notify(self, old_value, old_value, prop)
+                    except Exception as e:
+                        self._handle_error(e, f"Error notifying subscriber: {subscriber}")
         
-        if prop is not None:
+        if prop is not None and self._prop_subscribers.get(prop):
             subscribers_snapshot = list(self._prop_subscribers[prop])
             for subscriber in subscribers_snapshot:
                 if subscriber is not None:
@@ -334,17 +339,16 @@ class Signal:
                     except Exception as e:
                         self._handle_error(e, f"Error notifying property subscriber: {subscriber}")
 
-        try:
-            for callback in self._after_callbacks:
-                callback()
-        except Exception as e:
-            self._handle_error(e, "Error in _after_callbacks")
+        if self._after_callbacks:
+            try:
+                for callback in self._after_callbacks:
+                    callback()
+            except Exception as e:
+                self._handle_error(e, "Error in _after_callbacks")
 
     def __call__(self, prop=None) -> Any:
-        return self.get(prop)
-
-    def get(self, prop=None) -> Any:
         global _current_effect, _trackable
+        # Optimized: Inline get() logic to remove function call overhead
         if not _trackable:
             return getattr(self._value, prop) if prop else self._value
         if _current_effect:
@@ -352,9 +356,14 @@ class Signal:
                 self._prop_subscribers[prop].add(_current_effect)
             else:
                 self._subscribers.add(_current_effect)
+            # direct access to Effect internals to avoid getattr if possible, 
+            # but _current_effect is an instance.
             if hasattr(_current_effect, 'dependencies') and self not in _current_effect.dependencies:
                 _effects[_current_effect]["dependencies"].add(self)
         return getattr(self._value, prop) if prop else self._value
+
+    # Alias get to __call__ to avoid code duplication and maintain performance
+    get = __call__
 
     def peek(self):
         return self._value
@@ -447,6 +456,10 @@ def queue_update(signal, new_value):
         signal._set_value_internal(new_value)
 
 class Effect:
+    __slots__ = ('fn', 'dependencies', 'children', 'disposals', 'mounts', 
+                 'is_running', 'disposed', 'dirty', '_last_dependency_values', 
+                 '_subscribed_props', '_error_count', '_max_errors', '__weakref__')
+
     def __init__(self, fn: Callable[[], Any]):
         self.fn = fn
         self.dependencies: set = set()
