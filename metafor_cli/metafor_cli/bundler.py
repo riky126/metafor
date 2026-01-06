@@ -332,8 +332,9 @@ class MetaforBundler:
                 if needs_wheel_rebuild: break
         
         if needs_wheel_rebuild:
-            # Pass the TEMP build dir to create_wheel
-            self._create_wheel(wheel_build_dir, public_dir)
+            # DIRECT WHEEL GENERATION (No temp dir, no subprocess)
+            self._pack_wheel(wheel_staging, wheel_path)
+            print(f"Wheel created in {public_dir}")
         else:
             print(f"Wheel up to date.")
         
@@ -386,153 +387,91 @@ class MetaforBundler:
         print(f"Copying framework from {self.framework_dir}...")
         shutil.copytree(self.framework_dir, target_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.*'))
 
-    def _create_wheel(self, staging_dir, output_dir):
-        print("Creating wheel...")
-        import py_compile
+    def _pack_wheel(self, staging_dir, wheel_path):
+        # print(f"Packing wheel into {wheel_path}...")
+        import zipfile
+        import base64
         
-        # Find all top-level modules and packages
-        packages = []
-        py_modules = []
-        
-        # First, discover packages and modules BEFORE we delete .py files
-        all_packages = []
-        py_modules = []
-        
-        # We need to run find_packages on staging_dir.
-        # Since we can't easily import find_packages here without potentially messing up (it's in setup.py context usually),
-        # we will just do a manual walk for packages (directories with __init__.py).
-        for root, dirs, files in os.walk(staging_dir):
-            if "__init__.py" in files:
-                rel_path = pathlib.Path(root).relative_to(staging_dir)
-                if str(rel_path) == ".":
-                    # Root directory modules
-                    for file in files:
-                        if file.endswith(".py") and file != "setup.py":
-                            py_modules.append(file[:-3])
-                    continue 
-                package_name = str(rel_path).replace(os.sep, ".")
-                all_packages.append(package_name)
-        
-        print(f"Discovered packages for wheel: {all_packages}")
-
-        # Cleanup pass: Enforce use_pyc setting
-        if self.use_pyc:
-            # We want .pyc, so remove .py
-             for root, dirs, files in os.walk(staging_dir):
-                for file in files:
-                    if file.endswith(".py") and file != "setup.py":
-                        os.remove(pathlib.Path(root) / file)
-        else:
-             # We want .py, so remove .pyc
-             for root, dirs, files in os.walk(staging_dir):
-                for file in files:
-                    if file.endswith(".pyc"):
-                        os.remove(pathlib.Path(root) / file)
-        
-        # If we found no packages but we have modules, that's fine.
-        
-        package_data_spec = "{'': ['*.pyc']}" if self.use_pyc else "{'': ['*.py']}"
-        
-        # Merge with setup_config
+        # Replace dashes or spaces with underscores in name 
+        # (Distribution names can have dashes, but we want consistency)
         name = self.setup_config.get('name', 'metafor_app')
+        safe_name = name.replace('-', '_')
         version = self.setup_config.get('version', '0.1.0')
+        dist_info_dir = f"{safe_name}-{version}.dist-info"
         
-        # If packages is defined in setup_config, use it (unless it's find_packages() which we ignore)
-        # But we actually want to use our discovered packages + whatever the user might have added?
-        # Actually, for the wheel we are building FROM the staging dir, so we should rely on what we found in staging.
-        # The user's setup.py might have 'packages=find_packages()', which refers to source.
-        # We are building a wheel from staging.
-        # So we stick to `all_packages` we found, unless the user explicitly lists packages?
-        # Let's stick to `all_packages` for now as it reflects what we copied.
-        
-        # However, we should respect install_requires, package_data, etc.
-        install_requires = self.setup_config.get('install_requires', [])
-        
-        # If package_data is in setup_config, we might want to merge it or use it.
-        # The user provided spec: package_data={package_data_spec}
-        # But if the user has custom package data in setup.py, we should probably use that?
-        # The user said: "the bundler should add the miss 'packages={all_packages}, ...' to the setup config form the file."
-        # This implies we take the file config and OVERRIDE/ADD our discovered stuff.
-        
-        # So let's construct the arguments dict
-        setup_args = self.setup_config.copy()
-        setup_args['packages'] = all_packages
-        setup_args['py_modules'] = py_modules
-        
-        # For package_data, we want to ensure we include our .py/.pyc files.
-        # If the user has package_data, we should merge or append.
-        # But package_data is a dict.
-        user_package_data = setup_args.get('package_data', {})
-        # We want to ensure {'': ['*.pyc']} (or .py) is present.
-        # Let's just force our spec for now as it's critical for the wheel to work.
-        # Or better, merge it.
-        if '' not in user_package_data:
-             user_package_data[''] = []
-        if self.use_pyc:
-            if '*.pyc' not in user_package_data['']: user_package_data[''].append('*.pyc')
-        else:
-            if '*.py' not in user_package_data['']: user_package_data[''].append('*.py')
-        
-        setup_args['package_data'] = user_package_data
-        setup_args['include_package_data'] = True
-        
-        # Construct the setup() call string
-        # We need to format the args as a string representation
-        args_str = ",\n    ".join(f"{k}={repr(v)}" for k, v in setup_args.items())
-        
-        setup_content = f"""
-from setuptools import setup
+        with zipfile.ZipFile(wheel_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+            record_rows = []
+            
+            def add_file(path, arcname):
+                # print(f"  Adding {arcname}")
+                zf.write(path, arcname)
+                
+                # Calculate hash for RECORD
+                with open(path, 'rb') as f:
+                    data = f.read()
+                    digest = hashlib.sha256(data).digest()
+                    hash_str = base64.urlsafe_b64encode(digest).decode('ascii').rstrip('=')
+                    size = len(data)
+                    record_rows.append(f"{arcname},sha256={hash_str},{size}")
 
-setup(
-    {args_str}
-)
+            # Add source files
+            for root, dirs, files in os.walk(staging_dir):
+                for file in files:
+                     file_path = pathlib.Path(root) / file
+                     
+                     # Enforce strict use_pyc
+                     if self.use_pyc:
+                         # include .pyc only, ignore .py
+                         if file.endswith('.py'): continue
+                     else:
+                         # include .py only, ignore .pyc
+                         if file.endswith('.pyc'): continue
+                         
+                     # Skip setup.py in root of staging if it exists (removed generation, but just in case)
+                     if file == 'setup.py': continue
+                     
+                     rel_path = file_path.relative_to(staging_dir)
+                     add_file(file_path, str(rel_path))
+            
+            # Create METADATA
+            metadata = [
+                "Metadata-Version: 2.1",
+                f"Name: {name}",
+                f"Version: {version}",
+                "Summary: Metafor App",
+            ]
+            
+            # Dependencies
+            deps = self.setup_config.get('install_requires', [])
+            for dep in deps:
+                metadata.append(f"Requires-Dist: {dep}")
+                
+            metadata_content = "\n".join(metadata) + "\n"
+            zf.writestr(f"{dist_info_dir}/METADATA", metadata_content)
+            
+            # Hash METADATA
+            digest = hashlib.sha256(metadata_content.encode('utf-8')).digest()
+            hash_str = base64.urlsafe_b64encode(digest).decode('ascii').rstrip('=')
+            record_rows.append(f"{dist_info_dir}/METADATA,sha256={hash_str},{len(metadata_content)}")
+            
+            # Create WHEEL
+            wheel_content = """Wheel-Version: 1.0
+Generator: metafor-bundler
+Root-Is-Purelib: true
+Tag: py3-none-any
 """
-        with open(staging_dir / "setup.py", "w") as f:
-            f.write(setup_content)
+            zf.writestr(f"{dist_info_dir}/WHEEL", wheel_content)
             
-        import subprocess
-        import sys
-        try:
-            # We need to ensure setuptools is available.
-            # We need to ensure setuptools is available.
-            # We also pass the current environment to ensure PYTHONPATH is preserved if set.
-            env = os.environ.copy()
-            # Add current sys.path to PYTHONPATH to ensure dependencies are found
-            # IMPORTANT: Convert to absolute paths because subprocess runs in a different directory
-            current_pythonpath = env.get("PYTHONPATH", "")
-            abs_sys_path = [str(pathlib.Path(p).absolute()) for p in sys.path]
-            sys_path_str = os.pathsep.join(abs_sys_path)
-            env["PYTHONPATH"] = f"{sys_path_str}{os.pathsep}{current_pythonpath}"
+            # Hash WHEEL
+            digest = hashlib.sha256(wheel_content.encode('utf-8')).digest()
+            hash_str = base64.urlsafe_b64encode(digest).decode('ascii').rstrip('=')
+            record_rows.append(f"{dist_info_dir}/WHEEL,sha256={hash_str},{len(wheel_content)}")
             
-            # Run build silently
-            result = subprocess.run([
-                sys.executable, "setup.py", "-q", "bdist_wheel", "--dist-dir", str(output_dir.absolute())
-            ], cwd=staging_dir, env=env, capture_output=True, text=True, timeout=30)
-            
-            if result.returncode != 0:
-                print(result.stdout)
-                print(result.stderr)
-                raise Exception("Build failed")
-            
-            # Manually add top-level .pyc files to the wheel ONLY if use_pyc is True
-            if self.use_pyc:
-                # setuptools might skip them if source .py is missing and they are not in a package
-                import zipfile
-                wheel_files = list(output_dir.glob("*.whl"))
-                if wheel_files:
-                    wheel_path = wheel_files[0]
-                    # print(f"Patching wheel {wheel_path} to include top-level modules...")
-                    with zipfile.ZipFile(wheel_path, 'a') as zf:
-                        for module in py_modules:
-                            pyc_file = f"{module}.pyc"
-                            pyc_path = staging_dir / pyc_file
-                            if pyc_path.exists():
-                                # print(f"Adding {pyc_file} to wheel")
-                                zf.write(pyc_path, arcname=pyc_file)
-            
-            print(f"Wheel created in {output_dir}")
-        except Exception as e:
-            print(f"Failed to create wheel: {e}")
+            # Create RECORD (last)
+            record_rows.append(f"{dist_info_dir}/RECORD,,")
+            record_content = "\n".join(record_rows) + "\n"
+            zf.writestr(f"{dist_info_dir}/RECORD", record_content)
+
 
     def _update_pyscript_toml(self, toml_path):
         # print(f"Updating {toml_path}...")
