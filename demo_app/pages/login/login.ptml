@@ -25,6 +25,4 @@
     </div>
 }
 
-@style(name="login.css") {
-    
-}
+@style(name="login.css") { }

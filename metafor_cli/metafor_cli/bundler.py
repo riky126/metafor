@@ -404,15 +404,20 @@ class MetaforBundler:
             
             def add_file(path, arcname):
                 # print(f"  Adding {arcname}")
-                zf.write(path, arcname)
+                # Stream content to both Zip and Hasher in one pass
+                hasher = hashlib.sha256()
+                size = 0
                 
-                # Calculate hash for RECORD
-                with open(path, 'rb') as f:
-                    data = f.read()
-                    digest = hashlib.sha256(data).digest()
-                    hash_str = base64.urlsafe_b64encode(digest).decode('ascii').rstrip('=')
-                    size = len(data)
-                    record_rows.append(f"{arcname},sha256={hash_str},{size}")
+                # zf.open returns a file-like object we can write to
+                with open(path, 'rb') as src, zf.open(arcname, 'w') as dst:
+                    while chunk := src.read(64 * 1024): # 64k chunks
+                        size += len(chunk)
+                        hasher.update(chunk)
+                        dst.write(chunk)
+                
+                digest = hasher.digest()
+                hash_str = base64.urlsafe_b64encode(digest).decode('ascii').rstrip('=')
+                record_rows.append(f"{arcname},sha256={hash_str},{size}")
 
             # Add source files
             for root, dirs, files in os.walk(staging_dir):
