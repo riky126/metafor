@@ -280,26 +280,13 @@ class MetaforBundler:
         # Compile to .pyc in staging incrementally if needed
         # We do this IN STAGING so it persists
         if self.use_pyc:
-             import py_compile
-             for root, dirs, files in os.walk(wheel_staging):
-                for file in files:
-                    if file.endswith(".py") and file != "setup.py":
-                        file_path = pathlib.Path(root) / file
-                        pyc_path = file_path.with_suffix(".pyc")
-                        
-                        should_compile = False
-                        if not pyc_path.exists():
-                            should_compile = True
-                        else:
-                            if file_path.stat().st_mtime > pyc_path.stat().st_mtime:
-                                should_compile = True
-                        
-                        if should_compile:
-                            try:
-                                # print(f"Compiling {file_path} -> {pyc_path}")
-                                py_compile.compile(str(file_path), cfile=str(pyc_path), doraise=True)
-                            except Exception as e:
-                                print(f"Failed to compile {file_path}: {e}")
+             import compileall
+             # Use legacy=True to create .pyc files in-place (not __pycache__)
+             # Use workers to compile in parallel
+             try:
+                 compileall.compile_dir(str(wheel_staging), force=False, quiet=1, legacy=True, workers=os.cpu_count() or 1)
+             except Exception as e:
+                 print(f"Error during parallel pyc compilation: {e}")
 
         # Create Wheel from staging
         # We COPY staging to a temp build dir because _create_wheel is destructive (pyc compilation)
