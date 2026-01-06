@@ -1,5 +1,5 @@
 import re
-from .parser import PTMLElement, PTMLText, PTMLExpression, PTMLIf, PTMLForEach, PTMLSwitch, PTMLMatch, PTMLNode, PTMLFragment
+from .parser import PTMLElement, PTMLText, PTMLExpression, PTMLIf, PTMLForEach, PTMLRepeat, PTMLSwitch, PTMLMatch, PTMLNode, PTMLFragment
 
 class CodeGenerator:
     def __init__(self, start_index=0):
@@ -210,6 +210,24 @@ class CodeGenerator:
                 
             return f"For(each={list_expr}{key_arg}{fallback_arg}, children=lambda {node.item}, index: {children_code})"
             
+        elif isinstance(node, PTMLRepeat):
+            # Maps to metafor.components.Repeat
+            # Non-keyed reconciliation.
+            # children MUST be a lambda that takes (item, index)
+            # item is a Signal.
+            children_code = self.generate(node.children, indent + 1)
+            list_expr = self._transform_expression(node.list_expr)
+            
+            fallback_arg = ""
+            if getattr(node, 'fallback_children', None):
+                fallback_code = self.generate(node.fallback_children, indent + 1)
+                fallback_arg = f", fallback=lambda: {fallback_code}"
+            elif getattr(node, 'fallback_expr', None):
+                fallback_expr = self._transform_expression(node.fallback_expr)
+                fallback_arg = f", fallback={fallback_expr}"
+                
+            return f"Repeat(each={list_expr}{fallback_arg}, children=lambda {node.item}, index: {children_code})"
+
         elif isinstance(node, PTMLSwitch):
             children_code = []
             switch_expr = self._transform_expression(node.expression) if node.expression else None

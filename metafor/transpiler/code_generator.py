@@ -6,6 +6,7 @@ from .parser import JSXParser, JSXElement, JSXText, JSXExpression
 class ComponentType(enum.Enum):
     SHOW = "Show"
     FOR = "For"
+    REPEAT = "Repeat"
     FOR_EACH = "ForEach"
     SWITCH = "Switch"
     MATCH = "Match"
@@ -175,6 +176,15 @@ class JSXCodeGenerator:
                 return f"For(children={child_code}, {kwargs_str})"
             else:
                 return f"For(children=lambda item, i: {children_str}, {kwargs_str})"
+
+        elif tag_name == ComponentType.REPEAT.value:
+            kwargs_str = get_kwargs_str(wrap_lambdas=["fallback"])
+            # Similar to For, but maps to Repeat
+            if len(meaningful_children) == 1 and isinstance(meaningful_children[0], JSXExpression):
+                child_code = self.visit(meaningful_children[0], indent + 1)
+                return f"Repeat(children={child_code}, {kwargs_str})"
+            else:
+                return f"Repeat(children=lambda item, i: {children_str}, {kwargs_str})"
 
         elif tag_name == ComponentType.SWITCH.value:
             # Switch(children=[Match(...), ...], fallback=...)

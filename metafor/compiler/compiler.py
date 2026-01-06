@@ -336,7 +336,7 @@ class ModuleCodeGenerator:
         code.append("from metafor.core import unwrap, create_signal")
         code.append("from metafor.hooks import create_memo")
         code.append("from metafor.dom import t, load_css")
-        code.append("from metafor.components import Show, For, Switch, Match, Portal, Suspense, ErrorBoundary")
+        code.append("from metafor.components import Show, For, Repeat, Switch, Match, Portal, Suspense, ErrorBoundary")
         code.append("from metafor.decorators import component, page") 
         code.append("from metafor.context import ContextProvider") 
         
@@ -488,7 +488,7 @@ class ScopeValidator:
 
         defined = set(dir(builtins))
         defined.update(['unwrap', 'create_signal', 'create_memo', 't', 'load_css', 
-                        'Show', 'For', 'Switch', 'Match', 'Portal', 'Suspense', 'ErrorBoundary',
+                        'Show', 'For', 'Repeat', 'Switch', 'Match', 'Portal', 'Suspense', 'ErrorBoundary',
                         'component', 'page', 'styles', 'ContextProvider',
                         'console', 'window', 'document', 'js'])
         

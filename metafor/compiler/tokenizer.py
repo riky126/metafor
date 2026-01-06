@@ -21,6 +21,7 @@ class TokenType(enum.Enum):
     DIRECTIVE_ELIF = "DIRECTIVE_ELIF"       # @elif
     DIRECTIVE_ELSE = "DIRECTIVE_ELSE"       # @else
     DIRECTIVE_FOREACH = "DIRECTIVE_FOREACH" # @foreach
+    DIRECTIVE_REPEAT = "DIRECTIVE_REPEAT"   # @repeat
     DIRECTIVE_SWITCH = "DIRECTIVE_SWITCH"   # @switch
     DIRECTIVE_MATCH = "DIRECTIVE_MATCH"     # @match
     DIRECTIVE_FALLBACK = "DIRECTIVE_FALLBACK" # @fallback
@@ -368,6 +369,79 @@ class PTMLTokenizer:
                     elif part.startswith('fallback='):
                         self.add_token(TokenType.KEYWORD_FALLBACK, "fallback")
                         self.add_token(TokenType.EXPR_BODY, part[9:].strip())
+            else:
+                 self.add_token(TokenType.EXPR_BODY, args)
+        elif word == "@repeat":
+            self.add_token(TokenType.DIRECTIVE_REPEAT, word)
+            self._skip_whitespace()
+            start_args = self.pos
+            while self.pos < self.length and self.source[self.pos] != '{':
+                self.pos += 1
+            args = self.source[start_args:self.pos].strip()
+            if ' in ' in args:
+                item, rest = args.split(' in ', 1)
+                self.add_token(TokenType.EXPR_BODY, item.strip())
+                self.add_token(TokenType.KEYWORD_IN, "in")
+                
+                # Parse rest for list_expr, key, and fallback
+                # Use robust splitting that respects nesting and quotes
+                parts = []
+                current_part = []
+                balance = 0
+                in_string = False
+                quote_char = None
+                
+                i = 0
+                length = len(rest)
+                while i < length:
+                    char = rest[i]
+                    
+                    if in_string:
+                        if char == quote_char and (not current_part or current_part[-1] != '\\'):
+                            in_string = False
+                            quote_char = None
+                        current_part.append(char)
+                    else:
+                        if char == '"' or char == "'":
+                            in_string = True
+                            quote_char = char
+                            current_part.append(char)
+                        elif char in '([{':
+                            balance += 1
+                            current_part.append(char)
+                        elif char in ')]}':
+                            balance -= 1
+                            current_part.append(char)
+                        elif char == ',' and balance == 0:
+                            # Look ahead to see if this is a separator for key/fallback
+                            j = i + 1
+                            while j < length and rest[j].isspace():
+                                j += 1
+                            
+                            remaining = rest[j:]
+                            if remaining.startswith('key=') or remaining.startswith('fallback='):
+                                parts.append("".join(current_part).strip())
+                                current_part = []
+                                i += 1 # Skip comma
+                                continue
+                            else:
+                                current_part.append(char)
+                        else:
+                            current_part.append(char)
+                    i += 1
+                
+                if current_part:
+                    parts.append("".join(current_part).strip())
+
+                list_expr = parts[0]
+                self.add_token(TokenType.EXPR_BODY, list_expr)
+                
+                for part in parts[1:]:
+                    if part.startswith('fallback='):
+                        self.add_token(TokenType.KEYWORD_FALLBACK, "fallback")
+                        self.add_token(TokenType.EXPR_BODY, part[9:].strip())
+                    # Repeat usually doesn't need key, but we can support it or ignore it.
+                    # The user prompt implies it's like @foreach but mapping to Repeat.
             else:
                  self.add_token(TokenType.EXPR_BODY, args)
         elif word == "@switch":

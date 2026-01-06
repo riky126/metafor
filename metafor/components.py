@@ -186,6 +186,96 @@ def For(each: Union[Signal, Callable[[], List[Any]], List[Any]],
     return render_list
 
 
+def Repeat(each: Union[Signal, Callable[[], List[Any]], List[Any]], 
+           children: Callable[[Signal, int], ChildType],
+           fallback: Optional[ChildType] = None) -> Callable[[], ChildType]:
+    """
+    Component for repeating a template for each item in a list with non-keyed reconciliation.
+    DOM nodes are reused (recycled) by index/position.
+    
+    Best used for:
+    - Lists of primitives (strings, numbers)
+    - High-frequency updates where rows shouldn't be destroyed/recreated
+    
+    The 'children' function receives the item as a SIGNAL, not a raw value.
+    This allows the content to update in-place without re-rendering the row.
+    
+    Args:
+        each: Source of items.
+        children: Function receiving (item_signal, index).
+        fallback: Component to render when empty.
+    """
+    
+    # State to hold rows and their data signals
+    # rows: List of { "element": DOMNode, "signal": Signal, "setter": Setter }
+    state = {
+        "container": None,
+        "rows": []
+    }
+
+    def render_repeat():
+        items = track(each) if callable(each) else each
+        items = unwrap(items)
+        current_len = len(items) if items else 0
+        
+        # Initialize container
+        if not state["container"]:
+            state["container"] = t.div({"style": {"display": "contents"}}, [])
+            if get_current_effect():
+                state["container"].mounted = True
+                get_current_effect().run_mounts()
+        
+        container = state["container"].element
+        rows = state["rows"]
+        rows_len = len(rows)
+
+        # 1. Update existing rows
+        for i in range(min(current_len, rows_len)):
+            # Update the signal for this row with the new value
+            rows[i]["setter"](items[i])
+        
+        # 2. Add new rows if needed
+        if current_len > rows_len:
+            for i in range(rows_len, current_len):
+                # Create a new signal for this index
+                item_sig, item_set = create_signal(items[i])
+                
+                # Render the row passing the signal
+                child = children(item_sig, i)
+                
+                # Normalize child to DOMNode
+                if not isinstance(child, DOMNode):
+                     child = t.span({}, [str(child)])
+                
+                # Mount
+                container.appendChild(child.element)
+                if not getattr(child, "mounted", False):
+                    child.mounted = True
+                    if get_current_effect():
+                         get_current_effect().run_mounts()
+
+                rows.append({
+                    "element": child,
+                    "signal": item_sig,
+                    "setter": item_set
+                })
+
+        # 3. Remove extra rows if needed
+        elif current_len < rows_len:
+            for _ in range(rows_len - current_len):
+                row = rows.pop()
+                row["element"].remove() # Cleanup bindings
+        
+        # Handle fallback
+        if current_len == 0 and fallback:
+             if rows_len == 0: # Ensure we are empty
+                 return fallback() if callable(fallback) else fallback
+
+        return state["container"]
+
+    return render_repeat
+
+
 def Match(when: Union[Signal, Callable[[], bool]], 
           children: Callable[[], ChildType]) -> Dict:
     """

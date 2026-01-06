@@ -34,6 +34,14 @@ class PTMLForEach(PTMLNode):
         self.fallback_expr = fallback_expr
         self.fallback_children = fallback_children
 
+class PTMLRepeat(PTMLNode):
+    def __init__(self, item, list_expr, children, fallback_expr=None, fallback_children=None):
+        self.item = item
+        self.list_expr = list_expr
+        self.children = children
+        self.fallback_expr = fallback_expr
+        self.fallback_children = fallback_children
+
 class PTMLSwitch(PTMLNode):
     def __init__(self, expression, children):
         self.expression = expression
@@ -86,6 +94,7 @@ class PTMLParser:
         elif token.type == TokenType.DIRECTIVE_ELIF: return self.parse_elif()
         elif token.type == TokenType.DIRECTIVE_ELSE: return self.parse_else()
         elif token.type == TokenType.DIRECTIVE_FOREACH: return self.parse_foreach()
+        elif token.type == TokenType.DIRECTIVE_REPEAT: return self.parse_repeat()
         elif token.type == TokenType.DIRECTIVE_SWITCH: return self.parse_switch()
         elif token.type == TokenType.DIRECTIVE_MATCH: return self.parse_match()
         elif token.type == TokenType.ARROW:
@@ -250,6 +259,51 @@ class PTMLParser:
             self.expect(TokenType.BLOCK_CLOSE)
             
         return PTMLForEach(item, lst, children, key_expr, fallback_expr, fallback_children)
+
+    def parse_repeat(self):
+        self.expect(TokenType.DIRECTIVE_REPEAT)
+        item = self.expect(TokenType.EXPR_BODY).value
+        self.expect(TokenType.KEYWORD_IN)
+        lst = self.expect(TokenType.EXPR_BODY).value
+        
+        fallback_expr = None
+        
+        # Parse optional arguments (fallback)
+        while True:
+            if self.match(TokenType.KEYWORD_FALLBACK):
+                fallback_expr = self.expect(TokenType.EXPR_BODY).value
+            else:
+                break
+            
+        self.expect(TokenType.BLOCK_OPEN)
+        children = self.parse()
+        self.expect(TokenType.BLOCK_CLOSE)
+        
+        fallback_children = None
+        
+        # Skip whitespace/text before checking for arrow
+        while self.current().type == TokenType.TEXT and self.current().value.strip() == "":
+            self.advance()
+            
+        if self.match(TokenType.ARROW):
+            # Skip whitespace after arrow before checking for @fallback
+            while self.current().type == TokenType.TEXT and self.current().value.strip() == "":
+                self.advance()
+            
+            if self.current().type == TokenType.DIRECTIVE_FALLBACK:
+                self.advance()
+            else:
+                raise SyntaxError("Expected '@fallback' after '->'")
+            
+            # Skip whitespace after @fallback before expecting block open
+            while self.current().type == TokenType.TEXT and self.current().value.strip() == "":
+                self.advance()
+            
+            self.expect(TokenType.BLOCK_OPEN)
+            fallback_children = self.parse()
+            self.expect(TokenType.BLOCK_CLOSE)
+            
+        return PTMLRepeat(item, lst, children, fallback_expr, fallback_children)
 
     def parse_switch(self):
         self.expect(TokenType.DIRECTIVE_SWITCH)
