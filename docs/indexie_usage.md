@@ -87,10 +87,10 @@ Use `.get(key)` to retrieve a single record by its primary key.
 user = await db.users.get(1)
 ```
 
-Use `.toArray()` to get all records in a table.
+Use `.to_array()` to get all records in a table.
 
 ```python
-all_users = await db.users.toArray()
+all_users = await db.users.to_array()
 ```
 
 ### Deleting Data
@@ -116,12 +116,13 @@ Indexie supports fluent querying using `.where(index)`.
 *   **.equals(value)**: Exact match.
 *   **.above(value)**: Values greater than `value`.
 *   **.below(value)**: Values less than `value`.
-*   **.startsWith(value)**: String prefix match.
+*   **.starts_with(value)**: String prefix match.
+*   **.or_(index)**: Chain logical OR conditions (e.g. `.where("a").equals(1).or_("b").equals(2)`).
 
 ### Executing Queries
 
 After defining a where clause, execute it with:
-*   **.toArray()**: Returns a list of matching records.
+*   **.to_array()**: Returns a list of matching records.
 *   **.first()**: Returns the first matching record or `None`.
 *   **.count()**: Returns the number of matching records.
 
@@ -132,13 +133,19 @@ After defining a where clause, execute it with:
 user = await db.users.where("email").equals("alice@example.com").first()
 
 # Find all users named "Alice"
-alices = await db.users.where("name").equals("Alice").toArray()
+alices = await db.users.where("name").equals("Alice").to_array()
 
 # Find users with age above 18
-adults = await db.users.where("age").above(18).toArray()
+adults = await db.users.where("age").above(18).to_array()
 
 # Find users whose name starts with "A"
-a_names = await db.users.where("name").startsWith("A").toArray()
+a_names = await db.users.where("name").starts_with("A").to_array()
+
+# Pagination: get 2nd page of 10 users, sorted by name, reversed
+page_2 = await db.users.order_by("name").reverse().offset(10).limit(10).to_array()
+
+# OR query: Find users named "Alice" OR with age > 20
+mixed = await db.users.where("name").equals("Alice").or_("age").above(20).to_array()
 ```
 
 ## Error Handling
@@ -151,3 +158,10 @@ try:
 except Exception as e:
     console.error("Database error:", str(e))
 ```
+
+### New Features
+*   **.limit(n)**: Limit results.
+*   **.offset(n)**: Skip first n results.
+*   **.reverse()**: Reverse result order.
+*   **.order_by(key)**: Sort results.
+*   **.each(callback)**: Iterate over results.

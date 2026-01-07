@@ -56,47 +56,99 @@ def _to_js_obj(data):
 # --- Dexie-like Implementation ---
 
 class WhereClause:
-    def __init__(self, table, index: str):
+    def __init__(self, table, index: str, collection: 'Collection' = None):
         self.table = table
         self.index = index
+        self.collection = collection
         
+    def _attach(self, op, value):
+        if self.collection:
+            self.collection._add_condition(self.index, op, value)
+            return self.collection
+        return Collection(self.table, self.index, op, value)
+
     def equals(self, value):
-        return Collection(self.table, self.index, "equals", value)
+        return self._attach("equals", value)
         
     def above(self, value):
-        return Collection(self.table, self.index, "above", value)
+        return self._attach("above", value)
     
     def below(self, value):
-        return Collection(self.table, self.index, "below", value)
+        return self._attach("below", value)
         
-    def startsWith(self, value):
-        return Collection(self.table, self.index, "startsWith", value)
+    def starts_with(self, value):
+        return self._attach("starts_with", value)
 
 
 class Collection:
-    def __init__(self, table, index, op, value):
+    def __init__(self, table, index=None, op=None, value=None):
         self.table = table
-        self.index = index
-        self.op = op
-        self.value = value
+        self._conditions = []
+        if index:
+            self._conditions.append({"index": index, "op": op, "value": value})
+            
+        self._limit = None
+        self._offset = 0
+        self._order_by = None
+        self._reverse = False
+        self._filter_fn = None
     
-    async def toArray(self) -> List[Dict[str, Any]]:
+    def _add_condition(self, index, op, value):
+        self._conditions.append({"index": index, "op": op, "value": value})
+
+    def or_(self, index: str):
+        return WhereClause(self.table, index, collection=self)
+    
+    def limit(self, n: int):
+        self._limit = n
+        return self
+        
+    def offset(self, n: int):
+        self._offset = n
+        return self
+        
+    def reverse(self):
+        self._reverse = True
+        return self
+        
+    def order_by(self, key: str):
+        self._order_by = key
+        return self
+        
+    def filter(self, fn: Callable[[Any], bool]):
+        self._filter_fn = fn
+        return self
+
+    async def each(self, fn: Callable[[Any], None]):
+        """Iterates over the results and calls fn for each item."""
+        items = await self.to_array()
+        for item in items:
+            res = fn(item)
+            if inspect.iscoroutine(res):
+                await res
+    
+    async def to_array(self) -> List[Dict[str, Any]]:
         return await self.table._execute_query(self)
 
     async def first(self) -> Optional[Dict[str, Any]]:
-        results = await self.toArray()
+        # If no explicit limit set, optimization: limit 1
+        original_limit = self._limit
+        self._limit = 1
+        results = await self.to_array()
+        self._limit = original_limit # Restore?
         return results[0] if results else None
         
     async def count(self) -> int:
          # Optimization: use count() request instead of getAll
-         # For now, implemented via toArray len
-         results = await self.toArray()
+         # For now, implemented via to_array len which respects filters/limits
+         results = await self.to_array()
          return len(results)
 
 class Table:
-    def __init__(self, name: str, db: 'Indexie'):
+    def __init__(self, name: str, db: 'Indexie', primary_key: str = None):
         self.name = name
         self.db = db
+        self.primary_key = primary_key
         
     async def add(self, item: Dict[str, Any], key: Any = None):
         return await self.db._execute_rw(self.name, lambda store: store.add(_to_js_obj(item), key) if key else store.add(_to_js_obj(item)))
@@ -113,46 +165,168 @@ class Table:
     async def clear(self):
          return await self.db._execute_rw(self.name, lambda store: store.clear())
 
-    async def toArray(self):
+    async def to_array(self):
         return await self.db._execute_ro(self.name, lambda store: store.getAll())
         
     def where(self, index: str):
         return WhereClause(self, index)
 
+    def order_by(self, key: str):
+        c = Collection(self, None) 
+        c.index = key 
+        c._order_by = key
+        return c
+        
+    def limit(self, n: int):
+        c = Collection(self, None)
+        c.limit(n)
+        return c
+        
+    def filter(self, fn):
+        c = Collection(self, None)
+        c.filter(fn)
+        return c
+
+    def offset(self, n: int):
+        c = Collection(self, None)
+        c.offset(n)
+        return c
+        
+    def reverse(self):
+        c = Collection(self, None)
+        c.reverse()
+        return c
+
     async def _execute_query(self, collection: Collection):
         """Executes a query based on the Collection definition."""
-        # Using IDBKeyRange for filtering
-        def query_logic(store):
-            target = store
-            if collection.index and collection.index != ":id": # :id convention for primary key if needed, else assumed primary if not index
-                 if store.indexNames.contains(collection.index):
-                     target = store.index(collection.index)
-                 else:
-                     # Fallback or error? Dexie implicitly uses primary key if index name matches? 
-                     # For simplicity, assume valid index name provided or primary key name
-                     pass
+        
+        # We process each condition separately and merge results (Union).
+        # OR logic in IDB usually means multiple queries.
+        
+        all_results_dict = {} # Deduplication map: pk -> item
+        
+        conditions = collection._conditions
+        if not conditions:
+            # Fallback for empty condition? getAll()
+            conditions = [{"index": ":primary", "op": None, "value": None}] # Treat as full scan
 
-            key_range = None
-            from js import IDBKeyRange
+        for cond in conditions:
+            index = cond.get("index")
+            op = cond.get("op")
+            value = cond.get("value")
             
-            if collection.op == "equals":
-                key_range = IDBKeyRange.only(collection.value)
-            elif collection.op == "above":
-                key_range = IDBKeyRange.lowerBound(collection.value, True)
-            elif collection.op == "below":
-                key_range = IDBKeyRange.upperBound(collection.value, True)
-            elif collection.op == "startsWith":
-                 # startsWith "A" -> lower "A", upper "B" (next char)
-                 val = collection.value
-                 next_val = val[:-1] + chr(ord(val[-1]) + 1)
-                 key_range = IDBKeyRange.bound(val, next_val, False, True)
+            # Inner query logic for a single condition
+            def query_logic(store):
+                target = store
+                index_used = None
+                
+                # Decide usage of index
+                if index and index != ":id" and index != ":primary": 
+                     if store.indexNames.contains(index):
+                         target = store.index(index)
+                         index_used = index
+                
+                # If explicit orderBy matches this condition's index usage, good.
+                # But with OR queries, we can't rely on native sort usually unless only 1 condition.
+                
+                key_range = None
+                from js import IDBKeyRange
+                
+                if op == "equals":
+                    key_range = IDBKeyRange.only(value)
+                elif op == "above":
+                    key_range = IDBKeyRange.lowerBound(value, True)
+                elif op == "below":
+                    key_range = IDBKeyRange.upperBound(value, True)
+                elif op == "starts_with":
+                     val = value
+                     next_val = val[:-1] + chr(ord(val[-1]) + 1)
+                     key_range = IDBKeyRange.bound(val, next_val, False, True)
+                
+                # Optimization for native limit only if 1 condition and other checks pass
+                # Complex with OR. Disable native limit for OR queries for correctness (simple union).
+                # Only use native limit if 1 condition and no filter.
+                
+                can_use_native_limit = False
+                native_limit_count = None
+                
+                if len(conditions) == 1 and collection._filter_fn is None and not collection._reverse:
+                     if collection._limit is not None:
+                         native_limit_count = collection._limit + collection._offset
+                         can_use_native_limit = True
+
+                # Check sort compatibility for single condition
+                if can_use_native_limit and collection._order_by:
+                    if index_used != collection._order_by:
+                        can_use_native_limit = False
+
+                # Execution
+                req = None
+                if can_use_native_limit and native_limit_count is not None:
+                     if key_range:
+                         req = target.getAll(key_range, native_limit_count)
+                     else:
+                         req = target.getAll(None, native_limit_count)
+                else:
+                     if key_range:
+                         req = target.getAll(key_range)
+                     else:
+                         req = target.getAll()
+                         
+                return req
+
+            # Execute this condition
+            batch_results = await self.db._execute_ro(self.name, query_logic)
             
-            if key_range:
-                return target.getAll(key_range)
+            # Merge into all_results
+            pk_key = self.primary_key if self.primary_key else "id" # Default assumption
+            
+            for item in batch_results:
+                # We need to extract the PK to dedupe.
+                # If item is dict, use item[pk]. If it's primitive?
+                pk_val = item.get(pk_key)
+                if pk_val is not None:
+                    # check unique
+                    if pk_val not in all_results_dict:
+                        all_results_dict[pk_val] = item
+                else:
+                    # fallback if no PK found? Just append? IDB implies objects have keys.
+                    # If out of band keys? We only support inline keys usually.
+                    pass
+
+        results = list(all_results_dict.values())
+        
+        # Post-processing in Python
+        # 1. Memory Sort
+        if collection._order_by:
+             try:
+                 results.sort(key=lambda x: x.get(collection._order_by))
+             except:
+                 pass # Key might be missing
+        
+        # 1.5 Reverse if needed
+        if collection._reverse:
+            results.reverse()
+
+        # 2. Filter
+        if collection._filter_fn:
+            results = [x for x in results if collection._filter_fn(x)]
+
+        # 3. Offset and Limit
+        
+        # Apply offset
+        if collection._offset > 0:
+            if len(results) > collection._offset:
+                results = results[collection._offset:]
             else:
-                return target.getAll()
-
-        return await self.db._execute_ro(self.name, query_logic)
+                results = []
+                
+        # Apply limit
+        if collection._limit is not None:
+             if len(results) > collection._limit:
+                 results = results[:collection._limit]
+                 
+        return results
 
 
 class Version:
@@ -184,7 +358,17 @@ class Indexie:
         # Register tables immediately to allow access before open()
         for table_name in version.schema_definitions.keys():
              if table_name not in self._tables:
-                 self._tables[table_name] = Table(table_name, self)
+                 # Extract PK
+                 schema_str = version.schema_definitions[table_name]
+                 args = [x.strip() for x in schema_str.split(',')]
+                 pk_def = args[0]
+                 key_path = pk_def
+                 if pk_def.startswith("++"):
+                     key_path = pk_def[2:]
+                 elif pk_def.startswith("&"):
+                     key_path = pk_def[1:]
+
+                 self._tables[table_name] = Table(table_name, self, primary_key=key_path)
 
     def __getattr__(self, name):
         if name in self._tables:
@@ -314,7 +498,27 @@ class Indexie:
         txn = db.transaction(store_name, mode)
         store = txn.objectStore(store_name)
         
-        req = op(store)
+        
+        # op might return a tuple if we modified it in _execute_query logic?
+        # _execute_query returns await self.db._execute_ro(...)
+        # query_logic returns req. _execute_ro awaits request.
+        
+        result_from_op = op(store)
+        
+        # Handle case where op returns a tuple (req, metadata)
+        # But _execute_ro expects a Request-like object to attach events?
+        # We need to unpack if needed or store metadata elsewhere?
+        # Actually _execute_query implementation above returned (req, need_memory_sort) inside query_logic?
+        # NO, query_logic must return the IDBRequest object for _execute to attach listeners.
+        # If I want to pass metadata out, I should use a nonlocal or mutable arg.
+        
+        # Let's fix _execute_query logic to not return tuple in query_logic.
+        
+        if isinstance(result_from_op, tuple):
+             # This block is just conceptual safety, query_logic must return req
+             req = result_from_op[0]
+        else:
+             req = result_from_op
         
         # If it's a request (IDBRequest), await it.
         # If it's void (like delete?) strictly speaking delete returns IDBRequest.
@@ -328,6 +532,8 @@ class Indexie:
                 # Auto-convert generic results
                 if hasattr(res, 'to_py'):
                      res = res.to_py()
+                # If the op returned a tuple (req, extra_info), handle it? 
+                # No, op() returns the Request object directly usually.
                 future.set_result(res)
                 
             def error(e):
