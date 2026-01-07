@@ -2,6 +2,7 @@ import json
 import time
 import asyncio
 import inspect
+import contextvars
 from typing import Any, Dict, Optional, Protocol, Callable, List, TypeVar, Generic, Union
 from pyodide.ffi import create_proxy, JsProxy, to_js, JsException
 from js import console, Object, Promise
@@ -24,6 +25,13 @@ class StorageError(Exception):
 class IndexedDBError(StorageError):
     """Exception raised for IndexedDB specific errors."""
     pass
+
+class IndexedDBError(StorageError):
+    """Exception raised for IndexedDB specific errors."""
+    pass
+
+# --- Transaction Context ---
+_current_transaction_var = contextvars.ContextVar("current_transaction", default=None)
 
 # --- Helper Utilities ---
 
@@ -164,6 +172,20 @@ class Table:
         
     async def clear(self):
          return await self.db._execute_rw(self.name, lambda store: store.clear())
+
+
+    async def update(self, key: Any, changes: Dict[str, Any]):
+        """Performs a partial update on an object."""
+        obj = await self.get(key)
+        if obj is None:
+             raise IndexedDBError(f"Key {key} not found in {self.name}")
+        
+        # Merge changes
+        obj.update(changes)
+        
+        # Put back
+        await self.put(obj)
+        return True
 
     async def to_array(self):
         return await self.db._execute_ro(self.name, lambda store: store.getAll())
@@ -378,6 +400,44 @@ class Indexie:
     def table(self, name):
         return self._tables.get(name)
 
+    async def transaction(self, mode: str, scopes: Union[str, List[str]], async_fn: Callable):
+        """
+        Executes an async function within a single transaction.
+        mode: "rw" (readwrite) or "r" (readonly)
+        scopes: list of table names involved
+        async_fn: async function to execute
+        """
+        if isinstance(scopes, str):
+            scopes = [scopes]
+            
+        idb_mode = "readwrite" if mode == "rw" or mode == "readwrite" else "readonly"
+        
+        db = await self._ensure_open()
+        txn = db.transaction(to_js(scopes), idb_mode)
+        
+        # Set context
+        token = _current_transaction_var.set(txn)
+        
+        try:
+            # We await the user function.
+            # Dexie/IDB caveats: The transaction commits when no requests are pending in EL.
+            # Awaiting Python futures that tick the loop might cause commit if no IDB requests are active?
+            # Pyodide/JS bridging generally keeps txn alive if we await JS promises derived from it.
+            # But if we await pure python sleep, it might close.
+            # Users must ensure they chain IDB calls.
+            
+            res = await async_fn()
+            return res
+        except Exception as e:
+            # Abort if error
+            try:
+                txn.abort()
+            except:
+                pass
+            raise e
+        finally:
+             _current_transaction_var.reset(token)
+
     async def open(self):
         if self._is_open:
             return self
@@ -494,6 +554,42 @@ class Indexie:
         return await self._execute(store_name, "readonly", op)
 
     async def _execute(self, store_name, mode, op):
+        
+        # Check for active transaction
+        active_txn = _current_transaction_var.get()
+        
+        if active_txn:
+             # Verify scope? for performance we might skip or check objectStoreNames
+             # Simple check:
+             if active_txn.objectStoreNames.contains(store_name):
+                 if mode == "readwrite" and active_txn.mode == "readonly":
+                      raise IndexedDBError(f"Cannot execute readwrite on {store_name} inside readonly transaction")
+                 
+                 store = active_txn.objectStore(store_name)
+                 result_from_op = op(store)
+                 
+                 # Common logic extraction
+                 if isinstance(result_from_op, tuple):
+                     req = result_from_op[0]
+                 else:
+                     req = result_from_op
+
+                 if hasattr(req, 'onsuccess'):
+                     # We must return a future that awaits this request primarily
+                     future = asyncio.Future()
+                     def success(e):
+                        res = e.target.result
+                        if hasattr(res, 'to_py'): res = res.to_py()
+                        future.set_result(res)
+                     def error(e):
+                        future.set_exception(IndexedDBError(str(e.target.error)))
+                        
+                     req.onsuccess = create_proxy(success)
+                     req.onerror = create_proxy(error)
+                     return await future
+                 return req
+
+        # Fallback to auto-committed transaction (default behavior)
         db = await self._ensure_open()
         txn = db.transaction(store_name, mode)
         store = txn.objectStore(store_name)
