@@ -71,7 +71,13 @@ class Scheduler:
             
             for task in tasks:
                  try:
-                     task.run()
+                     if hasattr(task, 'run'):
+                         task.run()
+                     elif callable(task):
+                         res = task()
+                         if asyncio.iscoroutine(res):
+                             loop = asyncio.get_event_loop()
+                             loop.create_task(res)
                  except Exception as e:
                      if _global_error_handler:
                          _global_error_handler(e)
@@ -602,12 +608,8 @@ class Effect:
     
     def run_mounts(self):
         for mount in self.mounts:
-            try:
-                mount()
-            except Exception as e:
-                self._handle_error(e, "Mount error")
-            finally:
-                self.mounts.clear()
+            _scheduler.enqueue(mount)
+        self.mounts.clear()
 
     def remove_dependency(self, signal):
         if signal in self.dependencies:
