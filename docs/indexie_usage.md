@@ -148,6 +148,28 @@ page_2 = await db.users.order_by("name").reverse().offset(10).limit(10).to_array
 mixed = await db.users.where("name").equals("Alice").or_("age").above(20).to_array()
 ```
 
+## Transactions
+
+Execute multiple operations atomically using `db.transaction`.
+
+```python
+async def transfer_data():
+    # Both operations succeed or fail together
+    await db.users.add({"name": "New User"})
+    await db.logs.add({"action": "User Created"})
+
+# Run in readwrite transaction for "users" and "logs" tables
+await db.transaction(Indexie.Mode.READ_WRITE, ["users", "logs"], transfer_data)
+```
+
+## Partial Updates
+
+Update specific fields of an object without overwriting the whole record.
+
+```python
+# Updates only the age, preserving other fields
+await db.users.update(1, {"age": 31})
+
 ## Error Handling
 
 Database operations can raise `IndexedDBError` or other exceptions. Always wrap DB calls in try/except blocks.

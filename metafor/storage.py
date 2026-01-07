@@ -364,6 +364,10 @@ class Version:
 
 
 class Indexie:
+    class Mode:
+        READ_WRITE = "rw"
+        READ_ONLY = "r"
+
     def __init__(self, name: str, db: 'Indexie' = None): # db arg for compatibility if needed, though usually just name
         self.name = name
         self._versions: List[Version] = []
@@ -403,7 +407,7 @@ class Indexie:
     async def transaction(self, mode: str, scopes: Union[str, List[str]], async_fn: Callable):
         """
         Executes an async function within a single transaction.
-        mode: "rw" (readwrite) or "r" (readonly)
+        mode: Indexie.Mode.READ_WRITE ("rw") or Indexie.Mode.READ_ONLY ("r")
         scopes: list of table names involved
         async_fn: async function to execute
         """
