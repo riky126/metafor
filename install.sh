@@ -21,4 +21,4 @@ echo "Installing Metafor CLI..."
 "$PIP" install "$ROOT_DIR/metafor_cli"
 
 echo "✅ Done! Metafor is installed."
-echo "Run 'metafor serve' to start development."
+echo "Run 'metafor new <project_name>' to create a new project."

@@ -1,5 +1,17 @@
 {
     "scopeName": "source.ptml",
+    "injections": {
+        "text.html.basic": {
+            "patterns": [
+                {
+                    "include": "#control-flow"
+                },
+                {
+                    "include": "#embedded-python"
+                }
+            ]
+        }
+    },
     "patterns": [
         {
             "include": "#ptml-block"
@@ -8,7 +20,13 @@
             "include": "#style-block"
         },
         {
+            "include": "#control-flow"
+        },
+        {
             "include": "#python-block"
+        },
+        {
+            "include": "#chain-operator"
         },
         {
             "match": "<-",
@@ -19,6 +37,63 @@
         }
     ],
     "repository": {
+        "ptml-content": {
+            "patterns": [
+                {
+                    "include": "#embedded-python"
+                },
+                {
+                    "include": "#control-flow"
+                },
+                {
+                    "include": "#chain-operator"
+                },
+                {
+                    "include": "text.html.basic"
+                }
+            ]
+        },
+        "chain-operator": {
+            "match": "->",
+            "name": "keyword.operator.chain.ptml"
+        },
+        "control-flow": {
+            "patterns": [
+                {
+                    "begin": "(@(?:foreach|if|elif|else|repeat|switch|match|fallback))\\s*(?:(.*?)\\s*)?(\\{)",
+                    "beginCaptures": {
+                        "1": {
+                            "name": "entity.name.function.decorator.ptml"
+                        },
+                        "2": {
+                            "patterns": [
+                                {
+                                    "include": "source.python"
+                                }
+                            ]
+                        },
+                        "3": {
+                            "name": "punctuation.section.block.begin.ptml"
+                        }
+                    },
+                    "end": "\\}",
+                    "endCaptures": {
+                        "0": {
+                            "name": "punctuation.section.block.end.ptml"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "include": "#ptml-content"
+                        }
+                    ]
+                },
+                {
+                    "match": "(@(?:foreach|if|elif|else|repeat|switch|match|fallback))\\b",
+                    "name": "entity.name.function.decorator.ptml"
+                }
+            ]
+        },
         "python-block": {
             "begin": "((?:(?:<-)\\s*)?(?:@[a-zA-Z_]\\w*(?:\\([^)]*\\))?\\s*)+)(\\{)",
             "beginCaptures": {
@@ -110,10 +185,7 @@
             },
             "patterns": [
                 {
-                    "include": "#embedded-python"
-                },
-                {
-                    "include": "text.html.basic"
+                    "include": "#ptml-content"
                 }
             ]
         },
