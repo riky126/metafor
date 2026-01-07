@@ -1,8 +1,8 @@
 import inspect
 from js import document, console
 from typing import Callable, Any, Dict, Optional, List, Tuple, Union
-from metafor.core import ChildType, Signal, DOMNode, batch_updates, create_effect, create_signal, _effects, get_current_effect, track, unwrap
-from metafor.dom import t
+from metafor.core import Signal, batch_updates, create_effect, create_signal, _effects, get_current_effect, track, unwrap
+from metafor.dom import t, DOMNode, ChildType
 
 # Show component for conditional rendering
 def Show(when: Union[Signal, Callable[[], bool]], 

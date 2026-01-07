@@ -1,4 +1,5 @@
-from .core import render, RefHolder, create_ref
+from .core import RefHolder, create_ref
+from .dom import render
 from js import document
 
 __version__ = "0.1.0-beta"
