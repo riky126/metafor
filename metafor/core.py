@@ -1,4 +1,5 @@
 import weakref
+import asyncio
 import json
 from collections import defaultdict
 from typing import Callable, Any, List, Dict, Union, Optional
@@ -41,6 +42,51 @@ def suspend_tracking():
         yield
     finally:
         _trackable = prev_trackable
+
+# Scheduler for batching updates
+class Scheduler:
+    def __init__(self):
+        self.queue = set()
+        self.scheduled = False
+
+    def enqueue(self, task):
+        self.queue.add(task)
+        if not self.scheduled:
+            self.scheduled = True
+            try:
+                loop = asyncio.get_event_loop()
+                loop.create_task(self.flush())
+            except RuntimeError:
+                # Fallback for environments without a running loop (though one should exist)
+                 pass
+
+    async def flush(self):
+        # Allow other tasks to run (yielding control)
+        await asyncio.sleep(0)
+        
+        while self.queue:
+            # Snapshot the current queue to avoid infinite loops if tasks re-enqueue
+            tasks = list(self.queue)
+            self.queue.clear()
+            
+            for task in tasks:
+                 try:
+                     task.run()
+                 except Exception as e:
+                     if _global_error_handler:
+                         _global_error_handler(e)
+                     else:
+                         console.error(f"Error executing scheduled task: {e}")
+            
+            # Yield again to allow IO or other tasks if queue refills immediately? 
+            # For now, we clear one batch. If more is added, self.scheduled is still True?
+            # Actually we should reset scheduled flag *after* we are done or *before*?
+            # If we reset before loop, a new task creates a new flush task.
+            # Let's reset at the very end.
+        
+        self.scheduled = False
+
+_scheduler = Scheduler()
 
 def batch_updates(fn):
     global _batch_updates_active, _batch_updates_queue
@@ -326,7 +372,28 @@ class Signal:
             for subscriber in subscribers_snapshot:
                 if subscriber is not None:
                     try:
-                        subscriber.notify(self, old_value, old_value, prop)
+                        # If it's an Effect, schedule it.
+                        # If it's a Memo (or something else needing sync), run clearly.
+                        # Duck typing: check for 'run' method that doesn't take args (Effect.run)
+                        # Subscriber.notify takes args. 
+                        # Ideally, subscriber.notify is what we call.
+                        # But Effect.notify checks dirty and calls run.
+                        # Let's see Effect structure. Effect.notify calls self.run().
+                        # If we use the Scheduler, we likely wait to call subscriber.notify 
+                        # OR we manually mark dirty and schedule Effect.run().
+                        
+                        # Simplified scheduling:
+                        if isinstance(subscriber, Effect):
+                            # Mark dirty immediately to prevent redundant scheduling/computations?
+                            # Effect.notify does dirty check.
+                            # We can just schedule the notification call itself?
+                            # But Scheduler expects a task with .run(). 
+                            # Let's wrap the notify call or assume subscriber puts itself in scheduler.
+                            # Better: We modify Signal to simply enqueue the subscriber if it is an Effect.
+                            subscriber.dirty = True # Mark dirty synchronously
+                            _scheduler.enqueue(subscriber)
+                        else:
+                            subscriber.notify(self, old_value, old_value, prop)
                     except Exception as e:
                         self._handle_error(e, f"Error notifying subscriber: {subscriber}")
         
@@ -335,7 +402,11 @@ class Signal:
             for subscriber in subscribers_snapshot:
                 if subscriber is not None:
                     try:
-                        subscriber.notify(self, old_value, old_value, prop)
+                        if isinstance(subscriber, Effect):
+                            subscriber.dirty = True
+                            _scheduler.enqueue(subscriber)
+                        else:
+                            subscriber.notify(self, old_value, old_value, prop)
                     except Exception as e:
                         self._handle_error(e, f"Error notifying property subscriber: {subscriber}")
 
@@ -401,7 +472,11 @@ class Signal:
         for subscriber in subscribers_snapshot:
             if subscriber is not None:
                 try:
-                    subscriber.notify(self, old_value, new_value)
+                    if isinstance(subscriber, Effect):
+                        subscriber.dirty = True
+                        _scheduler.enqueue(subscriber)
+                    else:
+                        subscriber.notify(self, old_value, new_value)
                 except Exception as e:
                     self._handle_error(e, f"Error notifying subscriber: {subscriber}")
 
@@ -420,7 +495,11 @@ class Signal:
                 for subscriber in subscribers_snapshot:
                     if subscriber is not None:
                         try:
-                            subscriber.notify(self, old_value, new_value, prop)
+                            if isinstance(subscriber, Effect):
+                                subscriber.dirty = True
+                                _scheduler.enqueue(subscriber)
+                            else:
+                                subscriber.notify(self, old_value, new_value, prop)
                         except Exception as e:
                             self._handle_error(e, f"Error notifying property subscriber: {subscriber}")
 
