@@ -1,14 +1,13 @@
-import asyncio
 from js import console, Object
 from pyodide.ffi import to_js
 
-from metafor.core import create_signal, on_mount
+from metafor.core import create_signal, create_effect, on_mount
 from metafor.decorators import component
 from metafor.hooks import use_context, use_provider
 from metafor.dom import t
 from metafor.context import ContextProvider
 from metafor.dom import load_css
-from metafor.storage import index_db
+from metafor.storage import Indexie
 
 from contexts import ThemeContext, DBContext
 from app_state import container, counter_provider, app_provider
@@ -47,34 +46,24 @@ def MyApp(children, **props):
     
     theme = use_context(ThemeContext)
 
-    db_api = None
+    # Initialize Indexie DB
+    db = Indexie("MyApp")
     
-    def setup_schema(session):
-        console.log("Running schema setup for version:", session.DB.version)
-        try:
-            # Log and delete existing stores
-            console.log("Existing stores before setup:", list(session.DB.objectStoreNames))
+    # Define Schema
+    db.version(1).stores({
+        "myStore": "++id",
+        "users": "++id, &email, name"
+    })
 
-            # Create stores with explicit configuration
-            options = {"keyPath": "id", "autoIncrement": True}
-            my_store_index, my_store = db_api.create_store("myStore", options)
-            
-            user_store, _ = db_api.create_store("users", options)
-            user_store("name", options={"unique": False})
-            user_store("email", options={"unique": True})
-            
-            console.log("Schema setup completed successfully")
-        except Exception as e:
-            console.error("Schema setup error:", str(e))
-
-    async def on_connect(DB):
-        DBContext.set_value(DB)
+    async def init_db():
+        await db.open()
+        DBContext.set_value(db)
         try:            
             # Check if user exists first to avoid ConstraintError logs
-            existing_user = await DB.get_by_index("users", "email", "halem@mail.com")
+            existing_user = await db.users.where("email").equals("halem@mail.com").first()
             
             if not existing_user:
-                user = await DB.create("users", {"name": "Nehalem Doe", "email": "halem@mail.com"})
+                user = await db.users.add({"name": "Nehalem Doe", "email": "halem@mail.com"})
                 print("Created user:", user)
             else:
                 console.log("User 'halem@mail.com' already exists.")
@@ -82,8 +71,11 @@ def MyApp(children, **props):
         except Exception as e:
             console.error("Connection error:", str(e))
     
-    # Use a higher version to force schema update
-    db_api = index_db("MyApp", on_connected=on_connect, on_upgrade=setup_schema, version=1)  # Increased version
+    # Connect on mount
+    def on_db_mount():
+        asyncio.create_task(init_db())
+        
+    on_mount(on_db_mount)
     
     return t.div({
         "class_name": lambda: f"app theme-{theme()}"
