@@ -27,6 +27,16 @@ db.version(1).stores({
     "users": "++id, &email, name, age",
     "todos": "++id, title, done"
 })
+
+# Add an upgrade hook for data migration
+def on_upgrade_v2(txn):
+    # Example: Dropping an old table during upgrade
+    # Note: drop() is only valid in upgrade hooks
+    db.oldStore.drop()
+
+db.version(2).stores({
+    "users": "++id, &email, name"
+}).upgrade(on_upgrade_v2)
 ```
 
 ## Opening the Database
