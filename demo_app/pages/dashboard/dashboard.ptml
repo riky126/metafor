@@ -63,16 +63,16 @@
         n = random.randint(1, 10000)
         
         console.log("Starting Optimistic Transaction...")
-        async with db.users.start_optimistic_transaction() as tx:
+        async with db.users.start_optimistic() as tx:
              # 1. Add to Overlay (UI updates immediately)
              await db.users.add({"name": f"User {n}", "email": f"user{n}@test.com"})
              console.log(f"Added User {n} (Overlay) - UI should update now.")
              
              # 2. Simulate Network Delay
-             await asyncio.sleep(5) 
+             await asyncio.sleep(3) 
              
              # 3. Commit (Persist to IDB)
-             await tx.rollback()
+             await tx.commit()
              console.log(f"Committed User {n} to IndexedDB.")
 
     def on_add_click():

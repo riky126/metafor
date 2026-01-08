@@ -307,14 +307,14 @@ db.users.strategy = Strategy.LOCAL_FIRST # Default
 
 ### 5. Optimistic Transactions (Overlay)
 
-For advanced scenarios requiring instant UI updates with eventual consistency (like "Offline First"), use `start_optimistic_transaction()`. This creates an isolated **Memory Overlay** on on top of your table. 
+For advanced scenarios requiring instant UI updates with eventual consistency (like "Offline First"), use `start_optimistic()`. This creates an isolated **Memory Overlay** on on top of your table. 
 
 Writes (`add`, `put`, `delete`) are staged in memory and visible immediately to `use_live_query`, but are not persisted to IndexedDB until you call `commit()`.
 
 ```python
 async def add_user_optimistically():
     # 1. Start Transaction (Activates Memory Overlay)
-    async with db.users.start_optimistic_transaction() as tx:
+    async with db.users.start_optimistic() as tx:
          
          # 2. Add to Overlay (Instantly visible in UI)
          # A temporary key (e.g. -1) is generated for inline keys
@@ -341,7 +341,36 @@ This prevents temporary "draft" data from polluting your permanent IndexedDB sto
     1.  Trigger Hooks first.
     2.  Wait for Hook to succeed (await).
     3.  Update Local DB.
-### 6. Architecture Diagram
+### 6. Standard "Buffered" Transactions
+
+For standard ACID-like operations where you **do not** want the UI to update until everything is confirmed, use `start_transaction()`.
+
+**Key Features:**
+*   **Buffered**: Writes are staged in memory but **NOT** visible to `use_live_query`.
+*   **Atomic**: `commit()` applies all changes at once. UI updates in a single frame.
+
+```python
+async def transfer_money():
+    # Start standard transaction (Invisible to UI)
+    async with db.users.start_transaction() as tx:
+         
+         # These updates are buffered but NOT seen by user yet
+         await db.users.update(sender_id, {"balance": sender_bal - 100})
+         await db.users.update(receiver_id, {"balance": receiver_bal + 100})
+
+         try:
+             # Verify conditions 
+             if await check_fraud_allocator():
+                 raise Exception("Fraud Detected")
+             
+             # Atomic Commit: UI updates here
+             await tx.commit() 
+         except Exception:
+             # Rollback: Discard buffer (UI never flickered)
+             await tx.rollback()
+```
+
+### 7. Architecture Diagram
 
 Indexie follows a **Local-First** architecture with an optional **Memory Overlay**.
 
@@ -365,7 +394,7 @@ graph TD
 
     %% Reads
     IDB -->|Data Stream| T
-    OL -.->|Merged Data| T
+    OL -.->|Merged (If Visible)| T
     T -->|Updates Signal| S
     S -->|Re-runs| LQ
     LQ -->|Renders| UI
@@ -383,5 +412,7 @@ graph TD
     T -->|Trigger Hook| API
 ```
 
-*   **Reads**: `use_live_query` merges data from the **Memory Overlay** and **IndexedDB**. Users see their changes instantly, even before commit.
-*   **Writes (Overlay)**: Mutations update the in-memory **Overlay** first. The internal `start_optimistic_transaction` context manager handles moving successful state to **IndexedDB** on commit or discarding it on rollback.
+*   **Reads**: `use_live_query` merges data from the **Memory Overlay** (if visible) and **IndexedDB**.
+*   **Writes**: Mutations update the **Overlay**.
+    *   **Optimistic Tx**: Overlay is `visible`. UI updates instantly.
+    *   **Standard Tx**: Overlay is `hidden`. UI updates only on `commit`.

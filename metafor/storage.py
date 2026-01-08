@@ -196,6 +196,7 @@ class OverlayLayer:
         self.table = table
         self.mutations: Dict[Any, Dict[str, Any]] = {} # key -> {type: "put"|"delete", value: ...}
         self.active = False
+        self.visible = True # If False, mutations are buffered but not shown in queries
         
     def add(self, item: Dict[str, Any], key: Any = None):
         if not key:
@@ -266,7 +267,9 @@ class OverlayLayer:
     async def rollback(self):
         self.mutations.clear()
         self.active = False
-        self.table._set_version(self.table._version.peek() + 1) # Trigger UI refresh to clear optimistic data
+        if self.visible:
+             self.table._set_version(self.table._version.peek() + 1) # Trigger UI refresh to clear optimistic data
+        self.visible = True # Reset default
 
 
 
@@ -289,23 +292,37 @@ class Table:
         
         
     @contextlib.asynccontextmanager
-    async def start_optimistic_transaction(self):
+    async def start_optimistic(self):
         """
-        Starts an optimistic transaction. Reads/Writes will use memory overlay.
+        Starts an optimistic transaction. Reads/Writes will use memory overlay and ARE visible in UI.
         User must call tx.commit() to persist.
         """
         self._overlay.active = True
+        self._overlay.visible = True
         try:
             yield self._overlay
         except Exception:
-             # On error, rollback
              await self._overlay.rollback()
              raise
         finally:
              if self._overlay.active:
-                  # If exited without commit (and no error?), rollback or warn?
-                  # Usually explicit commit is required.
-                  # If we hit finally and still active, it means user didn't commit.
+                  await self._overlay.rollback()
+
+    @contextlib.asynccontextmanager
+    async def start_transaction(self):
+        """
+        Starts a standard transaction. Reads/Writes are BUFFERED in memory but NOT visible in UI.
+        Atomic Commit/Rollback logic applies.
+        """
+        self._overlay.active = True
+        self._overlay.visible = False
+        try:
+            yield self._overlay
+        except Exception:
+             await self._overlay.rollback()
+             raise
+        finally:
+             if self._overlay.active:
                   await self._overlay.rollback()
         
     @property
@@ -317,13 +334,15 @@ class Table:
         
     async def add(self, item: Dict[str, Any], key: Any = None, silent: bool = False):
         # 1. Check Overlay
+        # 1. Check Overlay
         if self._overlay.active:
              res = self._overlay.add(item, key)
-             self._set_version(self._version.peek() + 1)
              
-             # Still trigger hooks? Yes, to allow side-effects (Network Sync)
-             if not silent:
-                 await self._trigger_hook("on_add", {"item": item, "key": res})
+             if self._overlay.visible:
+                 self._set_version(self._version.peek() + 1)
+                 # Still trigger hooks? Yes, to allow side-effects
+                 if not silent:
+                     await self._trigger_hook("on_add", {"item": item, "key": res})
              return res
 
         use_explicit_key = key is not None and self.primary_key is None
@@ -354,11 +373,14 @@ class Table:
         pk_val = key or item.get(self.primary_key)
         
         # 1. Overlay
+        # 1. Overlay
         if self._overlay.active:
              res = self._overlay.put(item, key)
-             self._set_version(self._version.peek() + 1)
-             if not silent:
-                 await self._trigger_hook("on_update", {"item": item, "key": res})
+             
+             if self._overlay.visible:
+                 self._set_version(self._version.peek() + 1)
+                 if not silent:
+                     await self._trigger_hook("on_update", {"item": item, "key": res})
              return res
         
         use_explicit_key = key is not None and self.primary_key is None
@@ -386,7 +408,7 @@ class Table:
         
         async def _run():
             # 1. Check Overlay
-            if self._overlay.active:
+            if self._overlay.active and self._overlay.visible:
                  if key in self._overlay.mutations:
                      op = self._overlay.mutations[key]
                      if op['type'] == 'delete':
@@ -398,11 +420,13 @@ class Table:
         
     async def delete(self, key: Any, silent: bool = False):
         # 1. Overlay
+        # 1. Overlay
         if self._overlay.active:
              self._overlay.delete(key)
-             self._set_version(self._version.peek() + 1)
-             if not silent:
-                  await self._trigger_hook("on_delete", {"key": key, "all": False})
+             if self._overlay.visible:
+                 self._set_version(self._version.peek() + 1)
+                 if not silent:
+                      await self._trigger_hook("on_delete", {"key": key, "all": False})
              return
              
         if self.strategy == Strategy.NETWORK_FIRST and not silent:
@@ -716,7 +740,7 @@ class Table:
         results = list(all_results_dict.values())
         
         # --- OVERLAY MERGE ---
-        if self._overlay.active:
+        if self._overlay.active and self._overlay.visible:
              # Add Overlay Puts
              for key, op in self._overlay.mutations.items():
                  if op['type'] == 'put':
