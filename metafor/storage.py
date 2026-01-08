@@ -26,9 +26,7 @@ class IndexedDBError(StorageError):
     """Exception raised for IndexedDB specific errors."""
     pass
 
-class IndexedDBError(StorageError):
-    """Exception raised for IndexedDB specific errors."""
-    pass
+
 
 # --- Transaction Context ---
 _current_transaction_var = contextvars.ContextVar("current_transaction", default=None)
@@ -172,6 +170,12 @@ class Table:
         
     async def clear(self):
          return await self.db._execute_rw(self.name, lambda store: store.clear())
+
+    def drop(self):
+        """Deletes the object store. Only valid during an upgrade hook."""
+        if not self.db._db_instance:
+             raise IndexedDBError("Database instance not available for drop()")
+        self.db._db_instance.deleteObjectStore(self.name)
 
 
     async def update(self, key: Any, changes: Dict[str, Any]):
@@ -356,10 +360,16 @@ class Version:
         self.db = db
         self.version_number = version_number
         self.schema_definitions = {}
+        self.upgrade_callback = None
 
     def stores(self, schema: Dict[str, str]):
         self.schema_definitions = schema
         self.db._register_version(self)
+        return self
+
+    def upgrade(self, fn: Callable):
+        """Registers a callback to run when this version is applied."""
+        self.upgrade_callback = fn
         return self
 
 
@@ -399,6 +409,11 @@ class Indexie:
     def __getattr__(self, name):
         if name in self._tables:
             return self._tables[name]
+        
+        # Fallback: Check if table exists in active DB connection (e.g. during upgrade)
+        if self._db_instance and self._db_instance.objectStoreNames.contains(name):
+             return Table(name, self)
+
         raise AttributeError(f"'Indexie' object has no attribute '{name}'")
         
     def table(self, name):
@@ -467,9 +482,29 @@ class Indexie:
             console.log(f"Indexie: Upgrading {self.name} from {current_ver_num} to {new_ver_num}")
 
             # Find versions to apply
-            for ver in sorted(self._versions, key=lambda v: v.version_number):
-                if ver.version_number > current_ver_num:
-                    self._apply_schema(db, txn, ver.schema_definitions)
+            # Find versions to apply
+            # Upgrade transaction is special: it allows schema changes (createObjectStore)
+            # and data manipulation (add/put) within the same transaction.
+            
+            # We must expose the db_instance for schema operations like drop() which use db.deleteObjectStore
+            self._db_instance = db
+            
+            token = _current_transaction_var.set(txn)
+            try:
+                for ver in sorted(self._versions, key=lambda v: v.version_number):
+                    if ver.version_number > current_ver_num:
+                        self._apply_schema(db, txn, ver.schema_definitions)
+                        if ver.upgrade_callback:
+                             # Execute upgrade callback
+                             res = ver.upgrade_callback(txn) # We pass txn, but helper methods use context var
+                             if inspect.iscoroutine(res):
+                                 # We cannot await easily in this sync callback
+                                 asyncio.create_task(res)
+            finally:
+                _current_transaction_var.reset(token)
+                # Should we unset self._db_instance? It will be set again in on_success. 
+                # Leaving it might be fine, or safer to unset to avoid using half-open DB?
+                # on_success comes right after usually.
 
         def on_success(event):
             self._db_instance = event.target.result
@@ -566,7 +601,11 @@ class Indexie:
              # Verify scope? for performance we might skip or check objectStoreNames
              # Simple check:
              if active_txn.objectStoreNames.contains(store_name):
-                 if mode == "readwrite" and active_txn.mode == "readonly":
+                 # Allow write if mode is readwrite OR versionchange (upgrade transaction)
+                 is_ro = active_txn.mode == "readonly"
+                 # versionchange is effectively R/W + Schema
+                 
+                 if mode == "readwrite" and is_ro:
                       raise IndexedDBError(f"Cannot execute readwrite on {store_name} inside readonly transaction")
                  
                  store = active_txn.objectStore(store_name)
