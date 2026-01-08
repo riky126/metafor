@@ -1,19 +1,22 @@
 @page('', "Dashboard") @props {
+    import asyncio
     from contexts import DBContext, ThemeContext
     from metafor.hooks import create_memo, use_context, create_effect
     from metafor.core import batch_updates, create_signal, on_dispose, on_mount
     from metafor.utils import run_async
     from services import fetch_account
+    from metafor.storage import Indexie, use_live_query
+    from db import db
 
     theme = use_context(ThemeContext)
-    db_api = use_context(DBContext)
 
     def mounted():
         print("Dashboard Page mounted!")
         run_async(
             fetch_account
         )
-        # print(db_api().DB)
+        print('****************')
+        print(db.users)
     
     # on_mount (executed when the component is added to the DOM)
     on_mount(mounted)
@@ -50,6 +53,31 @@
         batch_updates(lambda: [
             update()
         ])
+
+    
+    # --- Reactive Query Example ---
+    # This list will automatically update when 'users' table changes.
+    users_list = use_live_query(lambda: db.users.to_array())
+
+    async def add_random_user():
+        import random
+        # Optimistic mutation happens immediately when we call add/update
+        n = random.randint(1, 10000)
+        
+        # Functional update example (if we were updating)
+        # await db.users.update(key, lambda u: u.update({"name": "New Name"}))
+        
+        await db.users.add({"name": f"User {n}", "email": f"user{n}@test.com"})
+
+    def on_add_click():
+        asyncio.create_task(add_random_user())
+        
+    async def clear_users():
+        await db.users.clear()
+        
+    def on_clear_click():
+        asyncio.create_task(clear_users())
+    # -----------------------------
 }
 
 @ptml {
@@ -59,6 +87,27 @@
             <p>Welcome to the home page!</p>
 
             @{lambda: user_data()}
+
+            <!-- Reactive Usage Demo -->
+            <div style="padding: 20px; border-top: 1px solid #ccc; margin-top: 20px;">
+                <h3>Reactive Indexie Demo</h3>
+                <div style="margin-bottom: 10px;">
+                    <sl-button onClick=@{on_add_click}>Add Random User</sl-button>
+                    <sl-button onClick=@{on_clear_click} style="margin-left: 10px;">Clear All</sl-button>
+                </div>
+                
+                <div>
+                    <strong>Total Users: @{lambda: len(users_list() or [])}</strong>
+                    <ul>
+                        @foreach u in users_list, key=lambda u, _: u.get('id') {
+                            <li>@{u.get('name')} (@{u.get('email')})</li> 
+                        } -> @fallback {
+                            <li>No users found</li>
+                        }
+                    </ul>
+                </div>
+            </div>
+
         </div>
     </div>
 }

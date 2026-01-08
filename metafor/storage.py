@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import contextvars
 from typing import Any, Dict, Optional, Protocol, Callable, List, TypeVar, Generic, Union
+from metafor.core import create_signal
 from pyodide.ffi import create_proxy, JsProxy, to_js, JsException
 from js import console, Object, Promise
 
@@ -133,43 +134,100 @@ class Collection:
             if inspect.iscoroutine(res):
                 await res
     
-    async def to_array(self) -> List[Dict[str, Any]]:
-        return await self.table._execute_query(self)
+    def to_array(self) -> List[Dict[str, Any]]:
+        self.table._version() # Track dependency
+        return self.table._execute_query(self)
 
-    async def first(self) -> Optional[Dict[str, Any]]:
-        # If no explicit limit set, optimization: limit 1
-        original_limit = self._limit
-        self._limit = 1
-        results = await self.to_array()
-        self._limit = original_limit # Restore?
-        return results[0] if results else None
+    def first(self) -> Optional[Dict[str, Any]]:
+        # Sync wrapper returning coroutine
+        self.table._version() # Track dependency
         
-    async def count(self) -> int:
-         # Optimization: use count() request instead of getAll
-         # For now, implemented via to_array len which respects filters/limits
-         results = await self.to_array()
-         return len(results)
+        async def _run():
+            # If no explicit limit set, optimization: limit 1
+            original_limit = self._limit
+            self._limit = 1
+            results = await self.to_array()
+            self._limit = original_limit 
+            return results[0] if results else None
+            
+        return _run()
+        
+    def count(self) -> int:
+         self.table._version()
+         async def _run():
+             # Optimization: use count() request instead of getAll
+             # For now, implemented via to_array len which respects filters/limits
+             results = await self.to_array()
+             return len(results)
+         return _run()
+
+class HookRegistrar:
+    def __init__(self):
+        self._hooks = {}
+
+    def on_add(self, callback: Callable):
+        self._register("on_add", callback)
+
+    def on_update(self, callback: Callable):
+        self._register("on_update", callback)
+
+    def on_delete(self, callback: Callable):
+        self._register("on_delete", callback)
+
+    def _register(self, event: str, callback: Callable):
+        if event not in self._hooks:
+            self._hooks[event] = []
+        self._hooks[event].append(callback)
+
+    async def _trigger(self, event: str, payload: Any):
+        if event in self._hooks:
+            for cb in self._hooks[event]:
+                res = cb(payload)
+                if inspect.iscoroutine(res):
+                    await res
 
 class Table:
     def __init__(self, name: str, db: 'Indexie', primary_key: str = None):
         self.name = name
         self.db = db
         self.primary_key = primary_key
+        # Signal to track table version for reactivity
+        self._version, self._set_version = create_signal(0)
+        self._hook_registrar = HookRegistrar()
+        
+    @property
+    def hook(self):
+        return self._hook_registrar
+        
+    async def _trigger_hook(self, event: str, payload: Any):
+        await self._hook_registrar._trigger(event, payload)
         
     async def add(self, item: Dict[str, Any], key: Any = None):
-        return await self.db._execute_rw(self.name, lambda store: store.add(_to_js_obj(item), key) if key else store.add(_to_js_obj(item)))
+        res = await self.db._execute_rw(self.name, lambda store: store.add(_to_js_obj(item), key) if key else store.add(_to_js_obj(item)))
+        self._set_version(self._version.peek() + 1)
+        await self._trigger_hook("on_add", {"item": item, "key": res})
+        return res
         
     async def put(self, item: Dict[str, Any], key: Any = None):
-        return await self.db._execute_rw(self.name, lambda store: store.put(_to_js_obj(item), key) if key else store.put(_to_js_obj(item)))
+        res = await self.db._execute_rw(self.name, lambda store: store.put(_to_js_obj(item), key) if key else store.put(_to_js_obj(item)))
+        self._set_version(self._version.peek() + 1)
+        await self._trigger_hook("on_update", {"item": item, "key": key or item.get(self.primary_key)})
+        return res
         
-    async def get(self, key: Any):
-        return await self.db._execute_ro(self.name, lambda store: store.get(key))
+    def get(self, key: Any):
+        self._version() # Track dependency
+        return self.db._execute_ro(self.name, lambda store: store.get(key))
         
     async def delete(self, key: Any):
-        return await self.db._execute_rw(self.name, lambda store: store.delete(key))
+        res = await self.db._execute_rw(self.name, lambda store: store.delete(key))
+        self._set_version(self._version.peek() + 1)
+        await self._trigger_hook("on_delete", {"key": key})
+        return res
         
     async def clear(self):
-         return await self.db._execute_rw(self.name, lambda store: store.clear())
+         res = await self.db._execute_rw(self.name, lambda store: store.clear())
+         self._set_version(self._version.peek() + 1)
+         return res
 
     def drop(self):
         """Deletes the object store. Only valid during an upgrade hook."""
@@ -178,21 +236,34 @@ class Table:
         self.db._db_instance.deleteObjectStore(self.name)
 
 
-    async def update(self, key: Any, changes: Dict[str, Any]):
-        """Performs a partial update on an object."""
+    async def update(self, key: Any, changes: Union[Dict[str, Any], Callable[[Dict[str, Any]], None]]):
+        """
+        Performs a partial update on an object.
+        Supports functional updates: await db.users.update(key, lambda u: u.update(changes))
+        """
         obj = await self.get(key)
+        
         if obj is None:
              raise IndexedDBError(f"Key {key} not found in {self.name}")
         
-        # Merge changes
-        obj.update(changes)
+        # Apply changes
+        if callable(changes):
+            changes(obj) # Obj is a dict (from _to_js_obj -> pyodide conversion usually returns dict-like or we ensure it)
+            # note: storage.get returns JS proxy usually, but we might need to be careful.
+            # actually _execute_ro returns whatever the IDB returns.
+            # If it's a JS object, we might need to wrap it or expect the user to handle it.
+            # But earlier code used obj.update(changes), implying it's a dict.
+        else:
+            obj.update(changes)
         
         # Put back
-        await self.put(obj)
+        await self.put(obj) 
+        # put() will trigger on_update and increment version
         return True
 
-    async def to_array(self):
-        return await self.db._execute_ro(self.name, lambda store: store.getAll())
+    def to_array(self):
+        self._version() # Track dependency
+        return self.db._execute_ro(self.name, lambda store: store.getAll())
         
     def where(self, index: str):
         return WhereClause(self, index)
@@ -785,3 +856,46 @@ _local_storage_target = None if is_server_side else localStorage
 
 session_storage = BrowserStorage(_session_storage_target, "session_storage")
 local_storage = BrowserStorage(_local_storage_target, "local_storage")
+
+def use_live_query(query_fn: Callable[[], Any]):
+    """
+    A hook that runs a query and keeps it updated when underlying tables change.
+    Uses metafor's signal system (create_effect) to track dependencies.
+    """
+    from metafor.core import create_signal, create_effect, on_dispose
+    import inspect
+    
+    # Initialize with empty list
+    data, set_data = create_signal([])
+    
+    def run_query():
+        try:
+            # We execute query_fn synchronously to capture signal dependencies (Table._version())
+            # Since Table methods now strictly track version before returning coroutine,
+            # this works inside the effect.
+            res = query_fn()
+            
+            if inspect.iscoroutine(res):
+                # If it's a coroutine, we spawn a task to await it
+                # The effect dependency is already tracked by the synchronous call above.
+                async def _await_result():
+                     try:
+                         val = await res
+                         set_data(val)
+                     except Exception as e:
+                         console.error(f"Live Query Async Error: {e}")
+                
+                asyncio.create_task(_await_result())
+            else:
+                # Synchronous result
+                set_data(res)
+                
+        except Exception as e:
+            console.error(f"Live Query Execution Error: {e}")
+
+    # Create effect to track and rerun
+    effect = create_effect(run_query)
+    
+    on_dispose(effect.dispose)
+            
+    return data

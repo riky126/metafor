@@ -7,23 +7,30 @@
     from metafor.hooks import use_context
     from contexts import ThemeContext, DBContext
     from routes import router
-    from metafor.storage import Indexie
+    from metafor.storage import Indexie, use_live_query
+    from db import db
     
     theme = use_context(ThemeContext)    
     count, set_count = create_signal(0)
 
-    # Initialize Indexie DB
-    db = Indexie("MyApp")
-    
-    # Define Schema
-    db.version(1).stores({
-        "myStore": "++id",
-        "users": "++id, &email, name"
-    })
+    # Note: DB initialized in db.py
 
     async def init_db():
         await db.open()
         DBContext.set_value(db)
+        
+        # --- TanStack-style Hook Example ---
+        # Simulate backend sync on adding user
+        async def on_user_add(payload):
+            # payload = {"item": ..., "key": ...}
+            item = payload['item']
+            console.log(f"Syncing user {item['name']} to backend (async)...")
+            await asyncio.sleep(0.5) # Simulate network
+            console.log(f"Synced user {item['name']}!")
+            # In real app: await fetch("/api/users", method="POST", body=item)
+            
+        db.users.hook.on_add(on_user_add)
+        # -----------------------------------
         
         try:
              # Check if user exists
