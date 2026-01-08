@@ -9,6 +9,7 @@ from metafor.core import create_signal
 from pyodide.ffi import create_proxy, JsProxy, to_js, JsException
 from js import console, Object, Promise, JSON, fetch
 from metafor.channels.server_push import ServerPush
+from metafor.http.client import Http
 
 from metafor.utils.runtime import is_server_side
 
@@ -299,32 +300,82 @@ class Table:
         # put() will trigger on_update and increment version
         return True
 
-    async def sync_electric(self, url: str, params: Dict[str, Any] = None):
+    async def sync_electric(self, url: str, params: Dict[str, Any] = None, headers: Dict[str, str] = None, http_client: Optional[Http] = None):
         """
         Starts syncing this table with an ElectricSQL Shape.
         Phase 1: Initial Fetch (Snapshot) via HTTP GET.
         Phase 2: Live Updates via ServerPush (SSE).
+        
+        Args:
+            url: The sync endpoint URL.
+            params: Query parameters (e.g. {"table": "users"}).
+            headers: Headers to include in the snapshot request (e.g. Authorization).
+            http_client: Optional 'metafor.http.client.Http' instance. If provided, it will be used
+                         for the snapshot fetch, allowing use of interceptors.
         """
         
         # --- Phase 1: Initial Fetch (Snapshot) ---
         query_params = (params or {}).copy()
-        snapshot_url = f"{url}?{urllib.parse.urlencode(query_params)}"
-        console.log(f"Phase 1: Fetching Snapshot from {snapshot_url}")
+        
+        console.log(f"Phase 1: Fetching Snapshot from {url}")
         
         offset = "-1"
+        data = None
+        fetch_headers = None
         
         try:
-            response = await fetch(snapshot_url)
-            if not response.ok:
-                console.error(f"Snapshot Fetch Error: {response.status}")
-                return
+            if http_client:
+                 # Use provided HTTP client (supports interceptors)
+                 # dict return: {'data': ..., 'headers': ..., 'status': ...}
+                 response_dict = await http_client.get(url, params=query_params, headers=headers)
+                 
+                 # Check status (http_client usually throws on error unless configured otherwise, 
+                 # but let's check status just in case)
+                 if 200 <= response_dict['status'] < 300:
+                     data = response_dict.get('data')
+                     fetch_headers = response_dict.get('headers')
+                 else:
+                     console.error(f"Snapshot HTTP Client Error: {response_dict['status']}")
+                     return
+            else:
+                 # Fallback to standard fetch
+                 snapshot_url = f"{url}?{urllib.parse.urlencode(query_params)}"
+                 fetch_opts = {}
+                 if headers:
+                     fetch_opts['headers'] = to_js(headers)
+                     
+                 response = await fetch(snapshot_url, **fetch_opts)
 
-            headers = response.headers
-            if headers.has("Electric-Offset"):
-                offset = headers.get("Electric-Offset")
-            
-            data = await response.json()
-            py_data = data.to_py() if hasattr(data, 'to_py') else []
+                 if not response.ok:
+                     console.error(f"Snapshot Fetch Error: {response.status if hasattr(response, 'status') else 'Unknown'}")
+                     return
+
+                 fetch_headers = getattr(response, 'headers', {})
+                 
+                 # response.json() handling
+                 json_method = getattr(response, 'json', None)
+                 if json_method:
+                    res = json_method()
+                    if inspect.isawaitable(res) or isinstance(res, Promise):
+                         data = await res
+                    else:
+                         data = res
+                 else:
+                     data = []
+
+            # Extract Offset
+            if fetch_headers:
+                header_offset = None
+                if hasattr(fetch_headers, 'get'): 
+                    header_offset = fetch_headers.get("Electric-Offset")
+                elif isinstance(fetch_headers, dict) and "Electric-Offset" in fetch_headers:
+                    header_offset = fetch_headers["Electric-Offset"]
+                    
+                if header_offset:
+                    offset = header_offset
+
+            # Convert to Python
+            py_data = data.to_py() if hasattr(data, 'to_py') else data
             
             if py_data:
                 console.log(f"Applying {len(py_data)} items from snapshot...")

@@ -243,6 +243,8 @@ Indexie supports real-time synchronization with [ElectricSQL](https://electric-s
 1.  **Initial Snapshot**: Fetches current state via HTTP GET.
 2.  **Live Stream**: Connects via Server-Sent Events (SSE) for real-time updates.
 
+#### Basic Usage
+
 ```python
 # Initialize Sync (usually in your init_db function)
 await db.users.sync_electric(
@@ -251,4 +253,56 @@ await db.users.sync_electric(
 )
 ```
 
+#### Authentication & Custom Headers
+
+You can pass authentication headers or use a configured `metafor.http` client.
+
+**Option 1: Passing Headers**
+
+```python
+await db.users.sync_electric(
+    url="...",
+    params={"table": "users"},
+    headers={"Authorization": "Bearer YOUR_TOKEN"}
+)
+```
+
+**Option 2: Using HTTP Client (for Interceptors)**
+
+Use this to leverage your existing app client (and its interceptors) for the initial fetch.
+
+```python
+from metafor.http import Http
+
+# Assuming your client has auth interceptors set up
+await db.users.sync_electric(
+    url="...",
+    params={"table": "users"},
+    http_client=db.http # Instance of metafor.http.client.Http
+)
+```
+
 Incoming sync changes are applied "silently" to the local DB (updating the UI but *not* triggering your `on_add` hooks again), preventing sync loops.
+
+### 4. Sync Strategies (`Strategy`)
+
+Control when your local changes are applied relative to network requests.
+
+```python
+from metafor.storage import Strategy
+
+# Configure per table
+db.users.strategy = Strategy.LOCAL_FIRST # Default
+```
+
+*   **`Strategy.LOCAL_FIRST` (Optimistic)**:
+    1.  Update Local DB immediately.
+    2.  Update UI.
+    3.  Trigger Hooks (e.g., `on_add`) to sync to network in background.
+    *   *Best for: Fast, responsive UIs.*
+
+*   **`Strategy.NETWORK_FIRST` (Pessimistic)**:
+    1.  Trigger Hooks first.
+    2.  Wait for Hook to succeed (await).
+    3.  Update Local DB.
+    *   *Best for: Critical data where server confirmation is required before UI update.*
