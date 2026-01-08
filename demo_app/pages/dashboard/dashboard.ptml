@@ -15,8 +15,6 @@
         run_async(
             fetch_account
         )
-        print('****************')
-        print(db.users)
     
     # on_mount (executed when the component is added to the DOM)
     on_mount(mounted)
@@ -77,7 +75,6 @@
         
     def on_clear_click():
         asyncio.create_task(clear_users())
-    # -----------------------------
 }
 
 @ptml {

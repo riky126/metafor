@@ -197,3 +197,58 @@ except Exception as e:
 *   **.reverse()**: Reverse result order.
 *   **.order_by(key)**: Sort results.
 *   **.each(callback)**: Iterate over results.
+
+## Reactive & Real-Time Sync
+
+Indexie includes advanced features for building reactive, local-first applications.
+
+### 1. Live Queries (`use_live_query`)
+
+The `use_live_query` hook makes your UI automatically reactive to database changes. It tracks dependencies and re-runs the query whenever the underlying table data changes.
+
+```python
+from metafor.storage import use_live_query
+
+# This list updates automatically when 'users' table changes
+users = use_live_query(lambda: db.users.to_array())
+```
+
+### 2. Mutation Hooks & Optimistic Updates
+
+You can register hooks to react to local changes. This is commonly used for **Optimistic UI** patterns, where you update the local DB immediately and sync to the backend in the background.
+
+```python
+# Async hooks are supported and awaited
+async def on_user_add(payload):
+    item = payload['item']
+    # Sync item to your backend API
+    await fetch("/api/users", method="POST", body=item)
+
+# Register hook
+db.users.hook.on_add(on_user_add)
+# Also available: .on_update, .on_delete
+```
+
+#### Functional Updates
+For "draft-style" updates (modifying current state), use a callable with `.update()`:
+
+```python
+# Updates age based on current value
+await db.users.update(key, lambda user: user.update({"age": user["age"] + 1}))
+```
+
+### 3. ElectricSQL Sync
+
+Indexie supports real-time synchronization with [ElectricSQL](https://electric-sql.com). It uses a hybrid approach:
+1.  **Initial Snapshot**: Fetches current state via HTTP GET.
+2.  **Live Stream**: Connects via Server-Sent Events (SSE) for real-time updates.
+
+```python
+# Initialize Sync (usually in your init_db function)
+await db.users.sync_electric(
+    url="https://api.electric-sql.cloud/v1/shape",
+    params={"table": "users"} # ElectricSQL Shape params
+)
+```
+
+Incoming sync changes are applied "silently" to the local DB (updating the UI but *not* triggering your `on_add` hooks again), preventing sync loops.

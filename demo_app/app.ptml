@@ -30,7 +30,12 @@
             # In real app: await fetch("/api/users", method="POST", body=item)
             
         db.users.hook.on_add(on_user_add)
-        # -----------------------------------
+
+        # --- ElectricSQL Sync Demo ---
+        # await db.users.sync_electric(
+        #     url="https://api.electric-sql.cloud/v1/shape",
+        #     params={"table": "users"}
+        # )
         
         try:
              # Check if user exists

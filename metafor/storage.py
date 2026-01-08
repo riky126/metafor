@@ -4,9 +4,11 @@ import asyncio
 import inspect
 import contextvars
 from typing import Any, Dict, Optional, Protocol, Callable, List, TypeVar, Generic, Union
+import urllib.parse
 from metafor.core import create_signal
 from pyodide.ffi import create_proxy, JsProxy, to_js, JsException
-from js import console, Object, Promise
+from js import console, Object, Promise, JSON, fetch
+from metafor.channels.server_push import ServerPush
 
 from metafor.utils.runtime import is_server_side
 
@@ -186,11 +188,18 @@ class HookRegistrar:
                 if inspect.iscoroutine(res):
                     await res
 
+from enum import Enum
+
+class Strategy(Enum):
+    LOCAL_FIRST = "local_first"
+    NETWORK_FIRST = "network_first"
+
 class Table:
-    def __init__(self, name: str, db: 'Indexie', primary_key: str = None):
+    def __init__(self, name: str, db: 'Indexie', primary_key: str = None, strategy: Strategy = Strategy.LOCAL_FIRST):
         self.name = name
         self.db = db
         self.primary_key = primary_key
+        self.strategy = strategy
         # Signal to track table version for reactivity
         self._version, self._set_version = create_signal(0)
         self._hook_registrar = HookRegistrar()
@@ -202,31 +211,64 @@ class Table:
     async def _trigger_hook(self, event: str, payload: Any):
         await self._hook_registrar._trigger(event, payload)
         
-    async def add(self, item: Dict[str, Any], key: Any = None):
-        res = await self.db._execute_rw(self.name, lambda store: store.add(_to_js_obj(item), key) if key else store.add(_to_js_obj(item)))
-        self._set_version(self._version.peek() + 1)
-        await self._trigger_hook("on_add", {"item": item, "key": res})
-        return res
+    async def add(self, item: Dict[str, Any], key: Any = None, silent: bool = False):
+        if self.strategy == Strategy.NETWORK_FIRST and not silent:
+            # Network First: Hook -> Local
+            # For 'add', key might be unknown if auto-increment.
+            # We pass key=None or User-provided key.
+            await self._trigger_hook("on_add", {"item": item, "key": key})
+            
+            # If hook didn't throw, proceed to write
+            res = await self.db._execute_rw(self.name, lambda store: store.add(_to_js_obj(item), key) if key else store.add(_to_js_obj(item)))
+            self._set_version(self._version.peek() + 1)
+            return res
+        else:
+            # Local First (Default): Local -> Hook
+            res = await self.db._execute_rw(self.name, lambda store: store.add(_to_js_obj(item), key) if key else store.add(_to_js_obj(item)))
+            self._set_version(self._version.peek() + 1)
+            if not silent:
+                await self._trigger_hook("on_add", {"item": item, "key": res})
+            return res
         
-    async def put(self, item: Dict[str, Any], key: Any = None):
-        res = await self.db._execute_rw(self.name, lambda store: store.put(_to_js_obj(item), key) if key else store.put(_to_js_obj(item)))
-        self._set_version(self._version.peek() + 1)
-        await self._trigger_hook("on_update", {"item": item, "key": key or item.get(self.primary_key)})
-        return res
+    async def put(self, item: Dict[str, Any], key: Any = None, silent: bool = False):
+        pk_val = key or item.get(self.primary_key)
+        
+        if self.strategy == Strategy.NETWORK_FIRST and not silent:
+            await self._trigger_hook("on_update", {"item": item, "key": pk_val})
+            
+            res = await self.db._execute_rw(self.name, lambda store: store.put(_to_js_obj(item), key) if key else store.put(_to_js_obj(item)))
+            self._set_version(self._version.peek() + 1)
+            return res
+        else:
+            res = await self.db._execute_rw(self.name, lambda store: store.put(_to_js_obj(item), key) if key else store.put(_to_js_obj(item)))
+            self._set_version(self._version.peek() + 1)
+            if not silent:
+                await self._trigger_hook("on_update", {"item": item, "key": pk_val})
+            return res
         
     def get(self, key: Any):
         self._version() # Track dependency
         return self.db._execute_ro(self.name, lambda store: store.get(key))
         
-    async def delete(self, key: Any):
-        res = await self.db._execute_rw(self.name, lambda store: store.delete(key))
-        self._set_version(self._version.peek() + 1)
-        await self._trigger_hook("on_delete", {"key": key})
-        return res
+    async def delete(self, key: Any, silent: bool = False):
+        if self.strategy == Strategy.NETWORK_FIRST and not silent:
+             await self._trigger_hook("on_delete", {"key": key})
+             
+             res = await self.db._execute_rw(self.name, lambda store: store.delete(key))
+             self._set_version(self._version.peek() + 1)
+             return res
+        else:
+            res = await self.db._execute_rw(self.name, lambda store: store.delete(key))
+            self._set_version(self._version.peek() + 1)
+            if not silent:
+                await self._trigger_hook("on_delete", {"key": key})
+            return res
         
-    async def clear(self):
+    async def clear(self, silent: bool = False):
          res = await self.db._execute_rw(self.name, lambda store: store.clear())
          self._set_version(self._version.peek() + 1)
+         # Clear usually doesn't need specific item hooks, but if we had on_clear:
+         # if not silent: await self._trigger_hook("on_clear", {})
          return res
 
     def drop(self):
@@ -248,11 +290,7 @@ class Table:
         
         # Apply changes
         if callable(changes):
-            changes(obj) # Obj is a dict (from _to_js_obj -> pyodide conversion usually returns dict-like or we ensure it)
-            # note: storage.get returns JS proxy usually, but we might need to be careful.
-            # actually _execute_ro returns whatever the IDB returns.
-            # If it's a JS object, we might need to wrap it or expect the user to handle it.
-            # But earlier code used obj.update(changes), implying it's a dict.
+            changes(obj) 
         else:
             obj.update(changes)
         
@@ -260,6 +298,85 @@ class Table:
         await self.put(obj) 
         # put() will trigger on_update and increment version
         return True
+
+    async def sync_electric(self, url: str, params: Dict[str, Any] = None):
+        """
+        Starts syncing this table with an ElectricSQL Shape.
+        Phase 1: Initial Fetch (Snapshot) via HTTP GET.
+        Phase 2: Live Updates via ServerPush (SSE).
+        """
+        
+        # --- Phase 1: Initial Fetch (Snapshot) ---
+        query_params = (params or {}).copy()
+        snapshot_url = f"{url}?{urllib.parse.urlencode(query_params)}"
+        console.log(f"Phase 1: Fetching Snapshot from {snapshot_url}")
+        
+        offset = "-1"
+        
+        try:
+            response = await fetch(snapshot_url)
+            if not response.ok:
+                console.error(f"Snapshot Fetch Error: {response.status}")
+                return
+
+            headers = response.headers
+            if headers.has("Electric-Offset"):
+                offset = headers.get("Electric-Offset")
+            
+            data = await response.json()
+            py_data = data.to_py() if hasattr(data, 'to_py') else []
+            
+            if py_data:
+                console.log(f"Applying {len(py_data)} items from snapshot...")
+                for item in py_data:
+                     val = item.get("value") if isinstance(item, dict) and "value" in item else item
+                     key = item.get("key") if isinstance(item, dict) and "key" in item else None
+                     await self.put(val, key=key, silent=True)
+                     
+            console.log(f"Snapshot applied. Starting SSE from offset {offset}.")
+
+        except Exception as e:
+            console.error(f"Snapshot Failed: {e}")
+            return
+
+        # --- Phase 2: Live Updates (ServerPush) ---
+        sse_params = query_params.copy()
+        sse_params["live"] = "true"
+        sse_params["offset"] = offset
+        
+        sse_url = f"{url}?{urllib.parse.urlencode(sse_params)}"
+        
+        # Use ServerPush abstraction
+        self._server_push = ServerPush(sse_url)
+        
+        # Define handler
+        async def on_sse_message(event):
+            try:
+                if not event.data: return
+                data = JSON.parse(event.data)
+                py_changes = data.to_py() if hasattr(data, 'to_py') else []
+                
+                if isinstance(py_changes, dict): py_changes = [py_changes]
+                
+                if py_changes:
+                    for change in py_changes:
+                        key = change.get("key")
+                        value = change.get("value")
+                        headers = change.get("headers", {})
+                        op = headers.get("operation") 
+                        deleted = change.get("deleted") or op == "delete"
+                        
+                        if deleted:
+                            await self.delete(key, silent=True)
+                        else:
+                            await self.put(value, key=key, silent=True)
+
+            except Exception as e:
+                console.error(f"SSE Message Error: {str(e)}")
+
+        # Register and Connect
+        self._server_push.on_message(on_sse_message)
+        self._server_push.connect()
 
     def to_array(self):
         self._version() # Track dependency
