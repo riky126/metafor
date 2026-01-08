@@ -25,7 +25,7 @@
             # payload = {"item": ..., "key": ...}
             item = payload['item']
             console.log(f"Syncing user {item['name']} to backend (async)...")
-            await asyncio.sleep(0.5) # Simulate network
+            await asyncio.sleep(1) # Simulate network
             console.log(f"Synced user {item['name']}!")
             # In real app: await fetch("/api/users", method="POST", body=item)
             

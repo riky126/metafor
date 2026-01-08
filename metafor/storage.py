@@ -292,30 +292,14 @@ class Table:
         
         
     @contextlib.asynccontextmanager
-    async def start_optimistic(self):
+    async def start_transaction(self, optimistic: bool = False):
         """
-        Starts an optimistic transaction. Reads/Writes will use memory overlay and ARE visible in UI.
-        User must call tx.commit() to persist.
-        """
-        self._overlay.active = True
-        self._overlay.visible = True
-        try:
-            yield self._overlay
-        except Exception:
-             await self._overlay.rollback()
-             raise
-        finally:
-             if self._overlay.active:
-                  await self._overlay.rollback()
-
-    @contextlib.asynccontextmanager
-    async def start_transaction(self):
-        """
-        Starts a standard transaction. Reads/Writes are BUFFERED in memory but NOT visible in UI.
-        Atomic Commit/Rollback logic applies.
+        Starts a transaction.
+        :param optimistic: If True, writes are visible immediately (Optimistic UI). 
+                           If False, writes are buffered and only visible on commit (Standard ACID).
         """
         self._overlay.active = True
-        self._overlay.visible = False
+        self._overlay.visible = optimistic
         try:
             yield self._overlay
         except Exception:

@@ -63,7 +63,7 @@
         n = random.randint(1, 10000)
         
         console.log("Starting Optimistic Transaction...")
-        async with db.users.start_optimistic() as tx:
+        async with db.users.start_transaction(optimistic=True) as tx:
              # 1. Add to Overlay (UI updates immediately)
              await db.users.add({"name": f"User {n}", "email": f"user{n}@test.com"})
              console.log(f"Added User {n} (Overlay) - UI should update now.")
