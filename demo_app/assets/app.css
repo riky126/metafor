@@ -74,6 +74,12 @@ sl-select::part(clear-button) {
   }
 }
 
+.theme-dark .db-container sl-button::part(base) {
+  color: #eee;
+  background-color: #4a4a4b;
+  border-color: #696868;
+}
+
 a {
  color: #b122d4 !important;
  cursor: pointer;

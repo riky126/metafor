@@ -78,33 +78,33 @@
 }
 
 @ptml {
-    <div className="home" onclick=@{update_person}>
-        <div className=@{lambda: f'theme-{theme()}'}>
+    <div className="home">
+        <div className=@{lambda: f'theme-{theme()}'} onclick=@{update_person} >
             <h2>Dashboard Page</h2>
             <p>Welcome to the home page!</p>
 
             @{lambda: user_data()}
-
-            <!-- Reactive Usage Demo -->
-            <div style="padding: 20px; border-top: 1px solid #ccc; margin-top: 20px;">
-                <h3>Reactive Indexie Demo</h3>
-                <div style="margin-bottom: 10px;">
-                    <sl-button onClick=@{on_add_click}>Add Random User</sl-button>
-                    <sl-button onClick=@{on_clear_click} style="margin-left: 10px;">Clear All</sl-button>
-                </div>
-                
-                <div>
-                    <strong>Total Users: @{lambda: len(users_list() or [])}</strong>
-                    <ul>
-                        @foreach u in users_list, key=lambda u, _: u.get('id') {
-                            <li>@{u.get('name')} (@{u.get('email')})</li> 
-                        } -> @fallback {
-                            <li>No users found</li>
-                        }
-                    </ul>
-                </div>
-            </div>
-
         </div>
+
+        <!-- Reactive Usage Demo -->
+        <div className=@{lambda: f'db-container theme-{theme()}'} style="padding: 20px; border-top: 2px solid #eeeeeeff; margin-top: 20px;">
+            <h3>Reactive Indexie Demo</h3>
+            <div style="margin-bottom: 10px;">
+                <sl-button onClick=@{on_add_click}>Add Random User</sl-button>
+                <sl-button onClick=@{on_clear_click} style="margin-left: 10px;">Clear All</sl-button>
+            </div>
+            
+            <div>
+                <strong>Total Users: @{lambda: len(users_list() or [])}</strong>
+                <ul>
+                    @foreach u in users_list, key=lambda u, _: u.get('id') {
+                        <li>@{u.get('name')} (@{u.get('email')})</li> 
+                    } -> @fallback {
+                        <li>No users found</li>
+                    }
+                </ul>
+            </div>
+        </div>
+
     </div>
 }
