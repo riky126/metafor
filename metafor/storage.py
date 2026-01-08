@@ -11,6 +11,7 @@ from js import console, Object, Promise, JSON, fetch
 from metafor.channels.server_push import ServerPush
 from metafor.http.client import Http
 
+import contextlib # New import
 from metafor.utils.runtime import is_server_side
 
 if is_server_side:
@@ -188,6 +189,86 @@ class HookRegistrar:
                 res = cb(payload)
                 if inspect.iscoroutine(res):
                     await res
+                    
+class OverlayLayer:
+    """In-memory layer for optimistic transactions."""
+    def __init__(self, table: 'Table'):
+        self.table = table
+        self.mutations: Dict[Any, Dict[str, Any]] = {} # key -> {type: "put"|"delete", value: ...}
+        self.active = False
+        
+    def add(self, item: Dict[str, Any], key: Any = None):
+        if not key:
+            # Need a temp key. If PK in item, use it. Else auto-gen?
+            # For overlay, auto-inc keys are tough. We might need negative keys or UUIDs.
+            # Assuming key provided or in item for now.
+            if self.table.primary_key in item:
+                key = item[self.table.primary_key]
+            else:
+                # Fallback temp key (negative random?)
+                import random
+                key = -random.randint(1, 1000000)
+                item[self.table.primary_key] = key
+        
+        self.mutations[key] = {"type": "put", "value": item}
+        return key
+        
+    def put(self, item: Dict[str, Any], key: Any = None):
+        pk = key or item.get(self.table.primary_key)
+        if not pk:
+             # Similar temp key logic
+             import random
+             pk = -random.randint(1, 1000000)
+             item[self.table.primary_key] = pk
+             
+        self.mutations[pk] = {"type": "put", "value": item}
+        return pk
+        
+    def delete(self, key: Any):
+        self.mutations[key] = {"type": "delete"}
+        
+    def clear(self):
+        self.mutations.clear()
+        # Mark as clear all? Complex. For now, simple clear of pending.
+        
+    async def commit(self):
+        """Persist changes to IDB."""
+        # Disable overlay so table.put/delete writes to IDB
+        self.active = False
+        try:
+             # Batch apply
+             keys = list(self.mutations.keys())
+             for key in keys:
+                 op = self.mutations[key]
+                 if op["type"] == "put":
+                     # Check for temporary key (negative integer)
+                     is_temp_key = isinstance(key, int) and key < 0
+                     
+                     if is_temp_key and self.table.primary_key:
+                         # Strip temp key so IDB generates real one (assuming auto-inc)
+                         val = op["value"].copy()
+                         if self.table.primary_key in val:
+                             del val[self.table.primary_key]
+                         await self.table.put(val, silent=True)
+                     else:
+                         await self.table.put(op["value"], key=key, silent=True)
+                         
+                 elif op["type"] == "delete":
+                     await self.table.delete(key, silent=True)
+             
+             self.mutations.clear()
+        except Exception as e:
+             # If commit fails, re-enable overlay to keep optimistic state accessible?
+             # Or arguably, the transaction failed.
+             self.active = True
+             raise e
+
+    async def rollback(self):
+        self.mutations.clear()
+        self.active = False
+        self.table._set_version(self.table._version.peek() + 1) # Trigger UI refresh to clear optimistic data
+
+
 
 from enum import Enum
 
@@ -204,6 +285,28 @@ class Table:
         # Signal to track table version for reactivity
         self._version, self._set_version = create_signal(0)
         self._hook_registrar = HookRegistrar()
+        self._overlay = OverlayLayer(self) # New Overlay
+        
+        
+    @contextlib.asynccontextmanager
+    async def start_optimistic_transaction(self):
+        """
+        Starts an optimistic transaction. Reads/Writes will use memory overlay.
+        User must call tx.commit() to persist.
+        """
+        self._overlay.active = True
+        try:
+            yield self._overlay
+        except Exception:
+             # On error, rollback
+             await self._overlay.rollback()
+             raise
+        finally:
+             if self._overlay.active:
+                  # If exited without commit (and no error?), rollback or warn?
+                  # Usually explicit commit is required.
+                  # If we hit finally and still active, it means user didn't commit.
+                  await self._overlay.rollback()
         
     @property
     def hook(self):
@@ -213,6 +316,22 @@ class Table:
         await self._hook_registrar._trigger(event, payload)
         
     async def add(self, item: Dict[str, Any], key: Any = None, silent: bool = False):
+        # 1. Check Overlay
+        if self._overlay.active:
+             res = self._overlay.add(item, key)
+             self._set_version(self._version.peek() + 1)
+             
+             # Still trigger hooks? Yes, to allow side-effects (Network Sync)
+             if not silent:
+                 await self._trigger_hook("on_add", {"item": item, "key": res})
+             return res
+
+        use_explicit_key = key is not None and self.primary_key is None
+        
+        # If inline key is expected but missing in item and provided in key, inject it
+        if self.primary_key and key is not None and self.primary_key not in item:
+             item[self.primary_key] = key
+
         if self.strategy == Strategy.NETWORK_FIRST and not silent:
             # Network First: Hook -> Local
             # For 'add', key might be unknown if auto-increment.
@@ -220,12 +339,12 @@ class Table:
             await self._trigger_hook("on_add", {"item": item, "key": key})
             
             # If hook didn't throw, proceed to write
-            res = await self.db._execute_rw(self.name, lambda store: store.add(_to_js_obj(item), key) if key else store.add(_to_js_obj(item)))
+            res = await self.db._execute_rw(self.name, lambda store: store.add(_to_js_obj(item), key) if use_explicit_key else store.add(_to_js_obj(item)))
             self._set_version(self._version.peek() + 1)
             return res
         else:
             # Local First (Default): Local -> Hook
-            res = await self.db._execute_rw(self.name, lambda store: store.add(_to_js_obj(item), key) if key else store.add(_to_js_obj(item)))
+            res = await self.db._execute_rw(self.name, lambda store: store.add(_to_js_obj(item), key) if use_explicit_key else store.add(_to_js_obj(item)))
             self._set_version(self._version.peek() + 1)
             if not silent:
                 await self._trigger_hook("on_add", {"item": item, "key": res})
@@ -234,14 +353,29 @@ class Table:
     async def put(self, item: Dict[str, Any], key: Any = None, silent: bool = False):
         pk_val = key or item.get(self.primary_key)
         
+        # 1. Overlay
+        if self._overlay.active:
+             res = self._overlay.put(item, key)
+             self._set_version(self._version.peek() + 1)
+             if not silent:
+                 await self._trigger_hook("on_update", {"item": item, "key": res})
+             return res
+        
+        use_explicit_key = key is not None and self.primary_key is None
+        
+        # If inline key is expected but missing in item and provided in key, inject it
+        # This handles updates where key is passed separately
+        if self.primary_key and key is not None: 
+             item[self.primary_key] = key
+
         if self.strategy == Strategy.NETWORK_FIRST and not silent:
             await self._trigger_hook("on_update", {"item": item, "key": pk_val})
             
-            res = await self.db._execute_rw(self.name, lambda store: store.put(_to_js_obj(item), key) if key else store.put(_to_js_obj(item)))
+            res = await self.db._execute_rw(self.name, lambda store: store.put(_to_js_obj(item), key) if use_explicit_key else store.put(_to_js_obj(item)))
             self._set_version(self._version.peek() + 1)
             return res
         else:
-            res = await self.db._execute_rw(self.name, lambda store: store.put(_to_js_obj(item), key) if key else store.put(_to_js_obj(item)))
+            res = await self.db._execute_rw(self.name, lambda store: store.put(_to_js_obj(item), key) if use_explicit_key else store.put(_to_js_obj(item)))
             self._set_version(self._version.peek() + 1)
             if not silent:
                 await self._trigger_hook("on_update", {"item": item, "key": pk_val})
@@ -249,11 +383,30 @@ class Table:
         
     def get(self, key: Any):
         self._version() # Track dependency
-        return self.db._execute_ro(self.name, lambda store: store.get(key))
+        
+        async def _run():
+            # 1. Check Overlay
+            if self._overlay.active:
+                 if key in self._overlay.mutations:
+                     op = self._overlay.mutations[key]
+                     if op['type'] == 'delete':
+                         return None
+                     return op['value']
+            
+            return await self.db._execute_ro(self.name, lambda store: store.get(key))
+        return _run()
         
     async def delete(self, key: Any, silent: bool = False):
+        # 1. Overlay
+        if self._overlay.active:
+             self._overlay.delete(key)
+             self._set_version(self._version.peek() + 1)
+             if not silent:
+                  await self._trigger_hook("on_delete", {"key": key, "all": False})
+             return
+             
         if self.strategy == Strategy.NETWORK_FIRST and not silent:
-             await self._trigger_hook("on_delete", {"key": key})
+             await self._trigger_hook("on_delete", {"key": key, "all": False})
              
              res = await self.db._execute_rw(self.name, lambda store: store.delete(key))
              self._set_version(self._version.peek() + 1)
@@ -262,7 +415,7 @@ class Table:
             res = await self.db._execute_rw(self.name, lambda store: store.delete(key))
             self._set_version(self._version.peek() + 1)
             if not silent:
-                await self._trigger_hook("on_delete", {"key": key})
+                await self._trigger_hook("on_delete", {"key": key, "all": False})
             return res
         
     async def clear(self, silent: bool = False):
@@ -430,8 +583,9 @@ class Table:
         self._server_push.connect()
 
     def to_array(self):
-        self._version() # Track dependency
-        return self.db._execute_ro(self.name, lambda store: store.getAll())
+        # Delegate to Collection to ensure overlay logic in _execute_query is used
+        # Must be sync to capture signal dependency immediately
+        return Collection(self, None).to_array()
         
     def where(self, index: str):
         return WhereClause(self, index)
@@ -560,6 +714,41 @@ class Table:
                     pass
 
         results = list(all_results_dict.values())
+        
+        # --- OVERLAY MERGE ---
+        if self._overlay.active:
+             # Add Overlay Puts
+             for key, op in self._overlay.mutations.items():
+                 if op['type'] == 'put':
+                      # We need to filter this item against valid clauses (in Python)
+                      # Implementing full full filter logic here is complex.
+                      # For now, simplistic merge: add if not rejected by logic later?
+                      # Simpler: Add ALL overlay puts, then let the Python filter/sort handle it below.
+                      # Ideally we should dedupe against results.
+                      
+                      # Find existing index in results? No, results is list of items.
+                      # Remove existing matching item if any
+                      pk = self.primary_key
+                      val = op['value']
+                      
+                      # Look for replacement
+                      existing_idx = -1
+                      for i, r in enumerate(results):
+                           # Weak check for PK equality
+                           if key is not None and r.get(pk) == key:
+                               existing_idx = i
+                               break
+                               
+                      if existing_idx != -1:
+                           results[existing_idx] = val
+                      else:
+                           results.append(val)
+                           
+                 elif op['type'] == 'delete':
+                      # Remove from results
+                      pk = self.primary_key
+                      results = [r for r in results if r.get(pk) != key]
+        # ---------------------
         
         # Post-processing in Python
         # 1. Memory Sort

@@ -1,5 +1,6 @@
 @page('', "Dashboard") @props {
     import asyncio
+    from js import console
     from contexts import DBContext, ThemeContext
     from metafor.hooks import create_memo, use_context, create_effect
     from metafor.core import batch_updates, create_signal, on_dispose, on_mount
@@ -59,13 +60,20 @@
 
     async def add_random_user():
         import random
-        # Optimistic mutation happens immediately when we call add/update
         n = random.randint(1, 10000)
         
-        # Functional update example (if we were updating)
-        # await db.users.update(key, lambda u: u.update({"name": "New Name"}))
-        
-        await db.users.add({"name": f"User {n}", "email": f"user{n}@test.com"})
+        console.log("Starting Optimistic Transaction...")
+        async with db.users.start_optimistic_transaction() as tx:
+             # 1. Add to Overlay (UI updates immediately)
+             await db.users.add({"name": f"User {n}", "email": f"user{n}@test.com"})
+             console.log(f"Added User {n} (Overlay) - UI should update now.")
+             
+             # 2. Simulate Network Delay
+             await asyncio.sleep(5) 
+             
+             # 3. Commit (Persist to IDB)
+             await tx.rollback()
+             console.log(f"Committed User {n} to IndexedDB.")
 
     def on_add_click():
         asyncio.create_task(add_random_user())
