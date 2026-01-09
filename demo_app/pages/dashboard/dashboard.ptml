@@ -8,7 +8,7 @@
     from services import fetch_account
     from metafor.storage import Indexie, use_live_query
     from db import db
-
+    from api_client import http_client
     theme = use_context(ThemeContext)
 
     def mounted():
@@ -64,16 +64,16 @@
         
         console.log("Starting Optimistic Transaction...")
         async with db.users.start_transaction(optimistic=True) as tx:
-             # 1. Add to Overlay (UI updates immediately)
-             await db.users.add({"name": f"User {n}", "email": f"user{n}@test.com"})
-             console.log(f"Added User {n} (Overlay) - UI should update now.")
-             
-             # 2. Simulate Network Delay
-             await asyncio.sleep(3) 
-             
-             # 3. Commit (Persist to IDB)
-             await tx.commit()
-             console.log(f"Committed User {n} to IndexedDB.")
+            # 1. Add to Overlay (UI updates immediately)
+            await db.users.add({"name": f"User {n}", "email": f"user{n}@test.com"})
+            console.log(f"Added User {n} (Overlay) - UI should update now.")
+            
+            # 2. Simulate Network Delay
+            # await asyncio.sleep(3) 
+            
+            # 3. Commit (Persist to IDB)
+            await tx.commit()
+            console.log(f"Committed User {n} to IndexedDB.")
 
     def on_add_click():
         asyncio.create_task(add_random_user())
@@ -83,6 +83,36 @@
         
     def on_clear_click():
         asyncio.create_task(clear_users())
+
+    # --- TanStack-style Hook Example ---
+    # Simulate backend sync on adding user
+    async def on_user_add(payload):
+        # payload = {"item": ..., "key": ...}
+        item = payload['item']
+        console.log(f"Syncing user {item['name']} to backend (async)...")
+        await asyncio.sleep(1) # Simulate network
+        console.log(f"Synced user {item['name']}!")
+        # In real app: await fetch("/api/users", method="POST", body=item)
+        
+    db.users.hook.on_add(on_user_add)
+
+
+    async def init_electric():
+        # --- ElectricSQL Sync Demo ---
+        await db.users.sync_electric(
+            url="http://localhost:8000/stream/electric",
+            params={"table": "users"},
+            http_client=http_client
+        )
+
+    def on_mounted():
+        asyncio.create_task(init_electric())
+
+    on_mount(on_mounted)
+
+    
+        
+    
 }
 
 @ptml {

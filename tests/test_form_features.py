@@ -3,7 +3,7 @@ import sys
 import os
 
 # Ensure we can import the package
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 
 # MOCK ENVIRONMENT setup must happen BEFORE importing metafor
 from unittest.mock import MagicMock

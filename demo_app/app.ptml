@@ -19,24 +19,6 @@
         await db.open()
         DBContext.set_value(db)
         
-        # --- TanStack-style Hook Example ---
-        # Simulate backend sync on adding user
-        async def on_user_add(payload):
-            # payload = {"item": ..., "key": ...}
-            item = payload['item']
-            console.log(f"Syncing user {item['name']} to backend (async)...")
-            await asyncio.sleep(1) # Simulate network
-            console.log(f"Synced user {item['name']}!")
-            # In real app: await fetch("/api/users", method="POST", body=item)
-            
-        db.users.hook.on_add(on_user_add)
-
-        # --- ElectricSQL Sync Demo ---
-        # await db.users.sync_electric(
-        #     url="https://api.electric-sql.cloud/v1/shape",
-        #     params={"table": "users"}
-        # )
-        
         try:
              # Check if user exists
              existing_user = await db.users.where("email").equals("halem@mail.com").first()
