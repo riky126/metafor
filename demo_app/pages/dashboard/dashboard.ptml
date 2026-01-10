@@ -4,12 +4,17 @@
     from contexts import DBContext, ThemeContext
     from metafor.hooks import create_memo, use_context, create_effect
     from metafor.core import batch_updates, create_signal, on_dispose, on_mount
+    from metafor.hooks import use_provider
     from metafor.utils import run_async
     from services import fetch_account
-    from metafor.storage import Indexie, use_live_query
-    from db import db
+    from metafor.indexie import Indexie, use_live_query
     from api_client import http_client
+    from db import db
+    from app_state import container, app_provider
+
     theme = use_context(ThemeContext)
+
+    app_state, set_state = use_provider(container, app_provider)
 
     def mounted():
         print("Dashboard Page mounted!")
@@ -33,13 +38,6 @@
             "roles": ["user"]
         }
     }, deep=True)
-
-    # Create an effect that will track changes
-    def user_effect():
-        print(f"User changed: {user_data()}")
-
-    create_effect(user_effect)
-    # These should now all trigger the effect:
    
     # These updates will now trigger the effect without changing references
     def update_person(e):
@@ -96,7 +94,6 @@
         
     db.users.hook.on_add(on_user_add)
 
-
     async def init_electric():
         # --- ElectricSQL Sync Demo ---
         await db.users.sync_electric(
@@ -104,12 +101,21 @@
             params={"table": "users"},
             http_client=http_client
         )
-        
 
-    def on_mounted():
-        asyncio.create_task(init_electric())
+    # Create an effect that will track changes
+    def user_auth_effect():
+        print(f"User Auth changed...")
 
-    on_mount(on_mounted)
+        if app_state()['auth_user']:
+           asyncio.create_task(init_electric())
+
+    def user_effect():
+        print(f"User changed: {user_data()}")
+
+    create_effect(user_effect)
+    create_effect(user_auth_effect)
+    # These should now all trigger the effect:
+    
 
     async def do_update():
         await db.users.put({"name": 'John Doe', "email": 'john@mail.com', "id": 10})

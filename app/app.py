@@ -7,7 +7,7 @@ from metafor.hooks import use_context, use_provider
 from metafor.dom import t
 from metafor.context import ContextProvider
 from metafor.dom import load_css
-from metafor.storage import Indexie
+from metafor.indexie import Indexie
 
 from contexts import ThemeContext, DBContext
 from app_state import container, counter_provider, app_provider
