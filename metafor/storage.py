@@ -321,7 +321,6 @@ class Table:
         
     async def add(self, item: Dict[str, Any], key: Any = None, silent: bool = False):
         # 1. Check Overlay
-        # 1. Check Overlay
         if self._overlay.active:
              res = self._overlay.add(item, key)
              
@@ -442,7 +441,7 @@ class Table:
         self.db._db_instance.deleteObjectStore(self.name)
 
 
-    async def update(self, key: Any, changes: Union[Dict[str, Any], Callable[[Dict[str, Any]], None]]):
+    async def update(self, key: Any, changes: Union[Dict[str, Any], Callable[[Dict[str, Any]], None]], silent: bool = False):
         """
         Performs a partial update on an object.
         Supports functional updates: await db.users.update(key, lambda u: u.update(changes))
@@ -450,16 +449,22 @@ class Table:
         obj = await self.get(key)
         
         if obj is None:
-             raise IndexedDBError(f"Key {key} not found in {self.name}")
-        
-        # Apply changes
-        if callable(changes):
-            changes(obj) 
+             console.log(f"Table.update: Key {key} not found. Changes type: {type(changes)}")
+             if isinstance(changes, dict):
+                 obj = changes
+                 # If key is part of changes, good. If not, and we have key arg, we might need to ensure it.
+                 # But self.put will handle the key extraction or usage.
+             else:
+                 raise IndexedDBError(f"Key {key} not found in {self.name} and cannot upsert with callable")
         else:
-            obj.update(changes)
+            # Apply changes
+            if callable(changes):
+                changes(obj) 
+            else:
+                obj.update(changes)
         
         # Put back
-        await self.put(obj) 
+        await self.put(obj, silent=silent) 
         # put() will trigger on_update and increment version
         return True
 
@@ -515,16 +520,32 @@ class Table:
 
                  fetch_headers = getattr(response, 'headers', {})
                  
-                 # response.json() handling
+                 # Robust body reading: try text first to handle "data: ..." format
+                 text_method = getattr(response, 'text', None)
                  json_method = getattr(response, 'json', None)
-                 if json_method:
-                    res = json_method()
-                    if inspect.isawaitable(res) or isinstance(res, Promise):
-                         data = await res
-                    else:
-                         data = res
-                 else:
-                     data = []
+                 
+                 data = []
+                 if text_method:
+                     raw_text = await text_method()
+                     # If it looks like JSON, try to parse. If it fails or looks like SSE "data:", keep as string
+                     try:
+                         # Only parse if it doesn't look like SSE
+                         if not raw_text.strip().startswith("data:"):
+                             data = json.loads(raw_text)
+                         else:
+                             data = raw_text
+                     except:
+                         data = raw_text
+                 elif json_method:
+                      # Fallback if text() not available (unlikely for fetch)
+                      try:
+                          res = json_method()
+                          if inspect.isawaitable(res) or isinstance(res, Promise):
+                              data = await res
+                          else:
+                              data = res
+                      except Exception:
+                          data = "[]" # Error parsing JSON
 
             # Extract Offset
             handle_header = None
@@ -550,6 +571,13 @@ class Table:
             # Convert to Python
             py_data = data.to_py() if hasattr(data, 'to_py') else data
             
+            def _get_clean_key(k):
+                if isinstance(k, str) and "/" in k:
+                    # Handle ElectricSQL composite key: "public"."users"/"uuid"
+                    # We want the UUID part
+                    return k.split("/")[-1].strip('"')
+                return k
+            
             if py_data:
                 # If it's a string, parse it
                 if isinstance(py_data, str):
@@ -567,9 +595,27 @@ class Table:
                 console.log(f"Snapshot Data Received: {py_data}")
                 console.log(f"Applying {len(py_data)} items from snapshot...")
                 for item in py_data:
+                     # Check for headers/control messages first
+                     headers = item.get("headers") if isinstance(item, dict) and "headers" in item else {}
+                     if headers and headers.get("control"):
+                         continue
+                     
                      val = item.get("value") if isinstance(item, dict) and "value" in item else item
+                     
+                     # Safety: If we fell back to 'item', ensure we don't store wrapper fields
+                     if val is item and isinstance(val, dict):
+                         # If it looks like a wrapper (has headers/key), clean it
+                         if "headers" in val or "key" in val:
+                             val = val.copy()
+                             val.pop("headers", None)
+                             val.pop("key", None)
+                     
+                     if val is None:
+                         continue
+
                      key = item.get("key") if isinstance(item, dict) and "key" in item else None
-                     await self.put(val, key=key, silent=True)
+                     clean_key = _get_clean_key(key)
+                     await self.put(val, key=clean_key, silent=True)
                      
             console.log(f"Snapshot applied. Starting SSE from offset {offset}.")
 
@@ -624,10 +670,14 @@ class Table:
                             op = headers.get("operation")
                             deleted = change.get("deleted") or op == "delete"
                             
+                            clean_key = _get_clean_key(key)
+                            
                             if deleted:
-                                await self.delete(key, silent=True)
+                                await self.delete(clean_key, silent=True)
+                            elif op == "update":
+                                await self.update(clean_key, value, silent=True)
                             elif value is not None:
-                                await self.put(value, key=key, silent=True)
+                                await self.put(value, key=clean_key, silent=True)
                                 
                         except Exception as inner_e:
                             console.error(f"Error processing SSE change: {inner_e}")
