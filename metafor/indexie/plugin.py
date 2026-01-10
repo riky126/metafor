@@ -5,6 +5,7 @@ import contextlib
 from typing import Any, Dict, Optional, Callable, List, TypeVar, Generic, Union
 from enum import Enum
 from js import console
+from metafor.form.schema import Schema
 from metafor.core import create_signal
 
 from .support import Support, IndexedDBError, StorageError, _to_js_obj
@@ -107,7 +108,6 @@ class OverlayLayer:
              self.table._set_version(self.table._version.peek() + 1)
         self.visible = True
 
-from metafor.form.schema import Schema
 
 class Table:
     def __init__(self, name: str, db: 'Indexie', primary_key: str = None, strategy: Strategy = Strategy.LOCAL_FIRST, schema: Schema = None):
