@@ -3,7 +3,7 @@ import json
 from js import console, Promise
 from pyodide.ffi import create_proxy, to_js
 from .support import _to_js_obj, IndexedDBError
-from .js_code import JS_FAST_CURSOR_CODE
+from .js_code import JS_FAST_CURSOR_CODE, JS_DELETE_CURSOR_CODE
 
 class QueryEngine:
     def __init__(self, db: 'Indexie'):
@@ -11,6 +11,7 @@ class QueryEngine:
         # We'll compile the JS function once if possible, or eval it when needed if context is tricky.
         import js
         self._fast_cursor_js = js.eval(JS_FAST_CURSOR_CODE)
+        self._fast_delete_cursor_js = js.eval(JS_DELETE_CURSOR_CODE)
 
     # --- Write Operations (Consolidated) ---
     
@@ -64,20 +65,119 @@ class QueryEngine:
         
     async def delete_many(self, collection):
          """Optimized bulk delete."""
-         # Fallback to fetching keys and deleting one by one for safety if JS optimization is risky
-         # Or use collection.each(delete) logic which Table.delete handles.
-         # For strict adherence to storage_old.py features, we skip optimized delete_many for now.
-         # We'll implement it as loop in Python or simpler.
-         # Actually storage_old.py didn't have delete_many.
-         # We will implement rudimentary loop here if needed or let Table handle it.
-         pass
+         conditions = collection._conditions
+         filter_fn = collection._filter_fn
+         limit = collection._limit
+         offset = collection._offset
+
+         # Default condition if empty
+         if not conditions:
+             conditions = [{"index": ":primary", "op": None, "value": None}]
+
+         use_native_cursor = False
+         target_index = None
+         target_range_op = None
+         target_range_val = None
+
+         if len(conditions) == 1 and filter_fn is None:
+             cond = conditions[0]
+             cond_index = cond.get("index")
+             
+             # Natural order or simple query suitable for fast delete
+             use_native_cursor = True
+             target_index = cond_index
+             target_range_op = cond.get("op")
+             target_range_val = cond.get("value")
+
+         if use_native_cursor:
+             try:
+                 return await self._execute_fast_delete_cursor(
+                     collection.table.name,
+                     target_index,
+                     target_range_op,
+                     target_range_val,
+                     False, # Reverse doesn't matter for delete usually, unless limit/offset used
+                     offset,
+                     limit
+                 )
+             except Exception as e:
+                 console.warn(f"QueryEngine: Fast delete failed ({e}). Falling back to slow delete.")
+         
+         # Fallback: Query keys then delete
+         # This is slower but handles all complex filters/sorts
+         items = await self.execute_query(collection)
+         count = 0
+         pk = collection.table.primary_key
+         
+         # Note: This fallback doesn't use a transaction for all deletes unless wrapped in one by caller
+         # Ideally we should start a transaction here if not in one.
+         
+         for item in items:
+             key = item.get(pk) if pk else item.get("id") # simplified key extraction
+             if key is not None:
+                 await self.delete(collection.table.name, key)
+                 count += 1
+         return count
 
     async def count(self, collection):
         """Optimized count."""
-        # For strict storage_old.py adherence, we just fetch all and count in python (via to_array).
-        # But we can optimize if just simple count.
-        # Let's delegate to execute_query for now to be safe and consistent with storage_old.py logic (Collection.count implementation).
-        pass
+        conditions = collection._conditions
+        filter_fn = collection._filter_fn
+        
+        # Optimize only if simple query and no custom python filter
+        if (not conditions or len(conditions) == 1) and filter_fn is None and collection._limit is None and collection._offset == 0:
+            cond = conditions[0] if conditions else {"index": ":primary", "op": None, "value": None}
+            index = cond.get("index")
+            op = cond.get("op")
+            val = cond.get("value")
+            
+            def count_logic(store):
+                target = store
+                if index and index not in [":primary", ":id"]:
+                    target = store.index(index)
+                
+                from js import IDBKeyRange
+                key_range = None
+                if op == "equals": key_range = IDBKeyRange.only(val)
+                elif op == "above": key_range = IDBKeyRange.lowerBound(val, True)
+                elif op == "below": key_range = IDBKeyRange.upperBound(val, True)
+                elif op == "starts_with": 
+                     v = val
+                     nv = v[:-1] + chr(ord(v[-1]) + 1)
+                     key_range = IDBKeyRange.bound(v, nv, False, True)
+                
+                return target.count(key_range) if key_range else target.count()
+
+            return await self.db._execute_ro(collection.table.name, count_logic)
+
+        # Fallback to fetching all (expensive!)
+        # Check if we can use execute_query which handles overlays etc.
+        results = await self.execute_query(collection)
+        return len(results)
+
+    async def _execute_fast_delete_cursor(self, store_name, index, op, value, reverse, offset, limit):
+        # Setup KeyRange in IDB transaction
+        from js import IDBKeyRange
+        
+        key_range = None
+        if op == "equals": key_range = IDBKeyRange.only(value)
+        elif op == "above": key_range = IDBKeyRange.lowerBound(value, True)
+        elif op == "below": key_range = IDBKeyRange.upperBound(value, True)
+        elif op == "starts_with": key_range = IDBKeyRange.bound(value, value + "\uffff")
+        
+        direction = "prev" if reverse else "next"
+        
+        def cursor_logic(store):
+            # Call the pre-compiled JS function
+            return self._fast_delete_cursor_js(store, index, key_range, direction, offset, limit)
+
+        # Execute
+        result = await self.db._execute_rw(store_name, cursor_logic)
+        
+        if hasattr(result, 'then'):
+            result = await result
+            
+        return int(result) if result is not None else 0
 
     # --- Query Execution ---
 

@@ -280,6 +280,9 @@ class Table:
     def to_array(self):
         return Collection(self, None).to_array()
         
+    def count(self):
+        return Collection(self, None).count()
+        
     def where(self, index: str):
         return WhereClause(self, index)
 
@@ -311,6 +314,15 @@ class Table:
 
     async def _execute_query(self, collection: 'Collection'):
         return await self.db.query_engine.execute_query(collection)
+        
+    async def _execute_count(self, collection: 'Collection'):
+        return await self.db.query_engine.count(collection)
+
+    async def _execute_delete(self, collection: 'Collection'):
+        count = await self.db.query_engine.delete_many(collection)
+        if count > 0:
+            self._set_version(self._version.peek() + 1)
+        return count
 
 class WhereClause:
     def __init__(self, table, index: str, collection: 'Collection' = None):
@@ -402,9 +414,11 @@ class Collection:
     def count(self) -> int:
          self.table._version()
          async def _run():
-             results = await self.to_array()
-             return len(results)
+             return await self.table._execute_count(self)
          return _run()
+         
+    async def delete(self) -> int:
+        return await self.table._execute_delete(self)
 
 class Version:
     def __init__(self, db, version_number):

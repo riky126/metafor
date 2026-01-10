@@ -49,3 +49,54 @@ JS_FAST_CURSOR_CODE = """
     });
 }
 """
+
+JS_DELETE_CURSOR_CODE = """
+(store, indexName, range, direction, offset, limit) => {
+    return new Promise((resolve, reject) => {
+        let req;
+        try {
+            let target = store;
+            if (indexName && indexName !== ":primary" && indexName !== ":id") {
+                target = store.index(indexName);
+            }
+            req = target.openCursor(range, direction);
+        } catch (e) {
+            reject(e);
+            return;
+        }
+
+        let count = 0;
+        let deletedCount = 0;
+        let advanced = false;
+        
+        req.onsuccess = (e) => {
+            let cursor = e.target.result;
+            if (!cursor) {
+                resolve(deletedCount);
+                return;
+            }
+            
+            // Native skip using advance()
+            if (offset > 0 && !advanced) {
+                advanced = true;
+                cursor.advance(offset);
+                return;
+            }
+            
+            // Delete current
+            cursor.delete();
+            deletedCount++;
+            count++;
+            
+            if (limit !== null && limit !== undefined && count >= limit) {
+                resolve(deletedCount);
+                return;
+            }
+            
+            cursor.continue();
+        };
+        
+        req.onerror = (e) => reject(e.target.error);
+    });
+}
+"""
