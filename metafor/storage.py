@@ -64,6 +64,422 @@ def _to_js_obj(data):
     """Helper to convert Python dict to JS Object safely."""
     return to_js(data, dict_converter=Object.fromEntries)
 
+# --- Optimized Pure JS Cursor Logic ---
+# This runs entirely in the browser thread, avoiding Python overhead for simple queries.
+JS_FAST_CURSOR_CODE = """
+(store, indexName, range, direction, offset, limit) => {
+    return new Promise((resolve, reject) => {
+        let req;
+        try {
+            let target = store;
+            if (indexName && indexName !== ":primary" && indexName !== ":id") {
+                target = store.index(indexName);
+            }
+            req = target.openCursor(range, direction);
+        } catch (e) {
+            reject(e);
+            return;
+        }
+
+        let count = 0;
+        let advanced = false;
+        let results = [];
+        
+        req.onsuccess = (e) => {
+            let cursor = e.target.result;
+            if (!cursor) {
+                resolve(results);
+                return;
+            }
+            
+            // Native skip using advance()
+            if (offset > 0 && !advanced) {
+                advanced = true;
+                cursor.advance(offset);
+                return;
+            }
+            
+            results.push(cursor.value);
+            count++;
+            
+            if (limit !== null && limit !== undefined && count >= limit) {
+                resolve(results);
+                return;
+            }
+            
+            cursor.continue();
+        };
+        
+        req.onerror = (e) => reject(e.target.error);
+    });
+}
+"""
+
+class QueryEngine:
+    def __init__(self, db: 'Indexie'):
+        self.db = db
+        # We'll compile the JS function once if possible, or eval it when needed if context is tricky.
+        # Ideally, we pass it as a string to run_python or just use it in an eval.
+        # Since we are in Pyodide, we can create a JS function from string using 'new Function' or eval.
+        from js import eval as js_eval
+        self._fast_cursor_js = js_eval(JS_FAST_CURSOR_CODE)
+
+    async def execute_query(self, collection: 'Collection'):
+        """Executes a query based on the Collection definition."""
+        
+        conditions = collection._conditions
+        order_by = collection._order_by
+        reverse = collection._reverse
+        limit = collection._limit
+        offset = collection._offset
+        filter_fn = collection._filter_fn
+        
+        # Default condition if empty
+        if not conditions:
+            conditions = [{"index": ":primary", "op": None, "value": None}]
+
+        # Check for Native Cursor Compatibility
+        use_native_cursor = False
+        target_index = None
+        target_range_op = None
+        target_range_val = None
+        
+        if len(conditions) == 1:
+            cond = conditions[0]
+            cond_index = cond.get("index")
+            
+            if order_by:
+                # Forced order: must match filter index (or filter on primary)
+                # Check if order_by IS the primary key
+                pk = collection.table.primary_key
+                is_pk_sort = (order_by == pk) or (order_by == ":id") or (order_by == ":primary")
+
+                if cond_index in [":primary", ":id", None, pk] or cond_index == order_by:
+                     use_native_cursor = True
+                     if is_pk_sort:
+                         target_index = ":primary"
+                     else:
+                         target_index = order_by 
+                     
+                     target_range_op = cond.get("op")
+                     target_range_val = cond.get("value")
+            else:
+                # Natural order
+                use_native_cursor = True
+                target_index = cond_index
+                target_range_op = cond.get("op")
+                target_range_val = cond.get("value")
+
+        if use_native_cursor:
+            try:
+                # Determine if we can use the FAST JS path (No Python Filter)
+                if filter_fn is None:
+                    results = await self._execute_fast_cursor(
+                        collection.table.name, 
+                        target_index, 
+                        target_range_op, 
+                        target_range_val, 
+                        reverse, 
+                        offset, 
+                        limit
+                    )
+                else:
+                    # Use Slow Path (Python Filter) - ported from old logic
+                    results = await self._execute_native_cursor_with_filter(
+                        collection.table.name,
+                        target_index,
+                        target_range_op,
+                        target_range_val,
+                        reverse,
+                        offset,
+                        limit,
+                        filter_fn
+                    )
+            except Exception as e:
+                # If native cursor fails (e.g. Index not found because field is not indexed),
+                # fallback to memory execution.
+                # Check for "NotFoundError" or specific IDB messages if we want to be strict,
+                # but generic fallback is usually safer for robustness.
+                err_msg = str(e)
+                if "NotFoundError" in err_msg or "not found" in err_msg or "index" in err_msg.lower():
+                     console.warn(f"QueryEngine: Native cursor failed ({err_msg}). Falling back to memory sort.")
+                     use_native_cursor = False # Trigger fallback block below? No, it's else block.
+                     # We must call fallback here.
+                     results = await self._execute_memory_fallback(collection)
+                else:
+                    raise e
+        else:
+             # Legacy Fallback
+             results = await self._execute_memory_fallback(collection)
+
+        # Apply Overlay (Optimistic Updates) implementation
+        return self._apply_overlay(results, collection)
+
+    def _apply_overlay(self, results, collection):
+         # Logic ported from Indexie._execute_query
+         table = collection.table
+         overlay = table._overlay # Access internal overlay
+         
+         if overlay.active and overlay.visible:
+             pk = table.primary_key
+             order_by = collection._order_by
+             reverse = collection._reverse
+             
+             # Apply Deletes
+             deleted_keys = {k for k, v in overlay.mutations.items() if v['type'] == 'delete'}
+             if deleted_keys:
+                 results = [r for r in results if r.get(pk) not in deleted_keys]
+
+             # Apply Puts
+             for key, op in overlay.mutations.items():
+                 if op['type'] == 'put':
+                      val = op['value']
+                      
+                      # Merge/Replace
+                      # We need to check if it's already in the result set to replace it
+                      existing_idx = -1
+                      for i, r in enumerate(results):
+                           if r.get(pk) == key:
+                               existing_idx = i
+                               break
+                      
+                      if existing_idx != -1:
+                           results[existing_idx] = val
+                      else:
+                           # Add to results (optimistic add)
+                           # Note: This might add items that are outside the current page limit/offset
+                           # But for "Live Query" feel, having the added item appear is usually desired
+                           # even if it violates strict pagination locally until next sync/refresh.
+                           results.append(val)
+                           
+             # Re-sort if we touched things
+             if order_by:
+                 try:
+                     results.sort(key=lambda x: x.get(order_by), reverse=reverse)
+                 except: pass
+
+         return results
+
+    async def _execute_fast_cursor(self, store_name, index, op, value, reverse, offset, limit):
+        # Setup KeyRange in IDB transaction
+        from js import IDBKeyRange
+        
+        key_range = None
+        if op == "equals": key_range = IDBKeyRange.only(value)
+        elif op == "above": key_range = IDBKeyRange.lowerBound(value, True)
+        elif op == "below": key_range = IDBKeyRange.upperBound(value, True)
+        elif op == "starts_with": key_range = IDBKeyRange.bound(value, value + "\uffff")
+        
+        direction = "prev" if reverse else "next"
+        
+        def cursor_logic(store):
+            # Call the pre-compiled JS function
+            return self._fast_cursor_js(store, index, key_range, direction, offset, limit)
+
+        # Execute
+        batch_results = await self.db._execute_ro(store_name, cursor_logic)
+        
+        # Resolve Promise & Convert
+        if hasattr(batch_results, 'then'):
+            batch_results = await batch_results
+        
+        if hasattr(batch_results, 'to_py'):
+             batch_results = batch_results.to_py()
+        
+        if not isinstance(batch_results, list):
+             try: batch_results = list(batch_results)
+             except: pass
+             
+        # Overlay Merge (Simplified for now - strictly, overlay should be applied ON TOP)
+        # This part requires access to the table's overlay.
+        # We need the table object or overlay. 
+        # Refactor note: execute_query passed 'collection', so we have 'collection.table'.
+        # But here I split the method. I should pass the overlay or table.
+        # For now, returning raw results, caller (Table wrapper) might handle overlay?
+        # NO, QueryEngine should handle it.
+        # I will update signatures in next steps or rely on common integration.
+        return batch_results
+
+    async def _execute_native_cursor_with_filter(self, store_name, index, op, value, reverse, offset, limit, filter_fn):
+        # Python Logic for complex filtering
+        
+        from js import IDBKeyRange
+        key_range = None
+        if op == "equals": key_range = IDBKeyRange.only(value)
+        elif op == "above": key_range = IDBKeyRange.lowerBound(value, True)
+        elif op == "below": key_range = IDBKeyRange.upperBound(value, True)
+        elif op == "starts_with": 
+             val = value
+             next_val = val[:-1] + chr(ord(val[-1]) + 1)
+             key_range = IDBKeyRange.bound(val, next_val, False, True)
+             
+        direction = "prev" if reverse else "next"
+        
+        # Define the cursor processing logic (closure)
+        def process_cursor(target, range_val, dir_val, off_val, lim_val, fil_val, resolve, reject):
+            results = []
+            state = {
+                "count": 0,       
+                "skipped": 0      
+            }
+            
+            # Since filter_fn is present, we cannot use native advance efficiently 
+            # because we don't know if the skipped items matched the filter.
+            
+            req = target.openCursor(range_val, dir_val)
+            
+            def on_success(e):
+                cursor = e.target.result
+                if cursor:
+                    # Get Item
+                    item = cursor.value
+                    
+                    # Apply Filter
+                    should_include = True
+                    # Must convert to Python for the lambda
+                    py_item = item.to_py() if hasattr(item, 'to_py') else item
+                    
+                    if not fil_val(py_item):
+                        should_include = False
+                    else:
+                        item = py_item # Optimization: use converted
+                    
+                    # Handle Manual Offset (Slow Skip)
+                    if should_include and off_val > 0:
+                        if state["skipped"] < off_val:
+                            state["skipped"] += 1
+                            should_include = False
+                    
+                    if should_include:
+                        # If not already converted
+                        if not hasattr(item, 'get'): # Crude check if it's still a proxy? No, above we converted.
+                             pass 
+                        
+                        results.append(item)
+                        state["count"] += 1
+                        
+                        if lim_val is not None and state["count"] >= lim_val:
+                            resolve(to_js(results))
+                            return
+
+                    cursor.continue_()
+                else:
+                    resolve(to_js(results))
+            
+            def on_error(e):
+                 reject(e.target.error)
+
+            req.onsuccess = create_proxy(on_success)
+            req.onerror = create_proxy(on_error)
+
+        def cursor_logic(store):
+            target = store
+            if index and index not in [":primary", ":id"]:
+                target = store.index(index)
+            
+            promise = Promise.new(create_proxy(lambda res, rej: process_cursor(
+                target, key_range, direction, offset, limit, filter_fn, res, rej
+            )))
+            return promise
+
+        batch_results = await self.db._execute_ro(store_name, cursor_logic)
+        
+        if hasattr(batch_results, 'then'):
+            batch_results = await batch_results
+            
+        if hasattr(batch_results, 'to_py'):
+             batch_results = batch_results.to_py()
+             
+        return batch_results
+
+    async def _execute_memory_fallback(self, collection):
+        # Legacy: Fetch All -> Sort -> Filter -> Slice in Python
+        # Used for complex queries (OR clauses, multi-index sort/filter mismatch)
+        
+        # 1. Gather all candidates
+        # If multiple OR clauses, we execute each and merge.
+        # Ideally we deduplicate by Primary Key.
+        
+        all_results_dict = {} # PK -> Item
+        
+        conditions = collection._conditions or [{"index": ":primary", "op": None, "value": None}]
+        
+        for cond in conditions:
+            idx = cond.get("index")
+            op = cond.get("op")
+            val = cond.get("value")
+            
+            # Fetch using native range if possible for this condition
+            # Simplest fallback: GetAll on index/store
+            
+            def fetch_logic(store):
+                target = store
+                key_range = None
+                
+                if idx and idx not in [":primary", ":id"]:
+                    if store.indexNames.contains(idx):
+                        target = store.index(idx)
+                        
+                from js import IDBKeyRange
+                if op == "equals": key_range = IDBKeyRange.only(val)
+                elif op == "above": key_range = IDBKeyRange.lowerBound(val, True)
+                elif op == "below": key_range = IDBKeyRange.upperBound(val, True)
+                elif op == "starts_with": 
+                     v = val
+                     nv = v[:-1] + chr(ord(v[-1]) + 1)
+                     key_range = IDBKeyRange.bound(v, nv, False, True)
+                
+                if key_range:
+                    return target.getAll(key_range)
+                else:
+                    return target.getAll()
+
+            batch = await self.db._execute_ro(collection.table.name, fetch_logic)
+            
+            # Convert
+            if hasattr(batch, 'to_py'): batch = batch.to_py()
+            
+            # Merge
+            pk = collection.table.primary_key
+            for item in batch:
+                # If we don't know PK, we can't dedup easily. Indexie requires PK usually.
+                # If PK missing, we assume 'id' or fallback to object identity?
+                # Actually, Indexie schemas usually have ++id.
+                
+                item_key = None
+                if pk:
+                    item_key = item.get(pk)
+                else:
+                    item_key = item.get("id")
+                
+                if item_key is not None:
+                    all_results_dict[item_key] = item
+                else:
+                    # No key, just append? (Memory efficient?)
+                    # If we use ID, we can deduplicate.
+                    pass
+
+        results = list(all_results_dict.values())
+        
+        # 2. Sort
+        if collection._order_by:
+            key = collection._order_by
+            try:
+                results.sort(key=lambda x: x.get(key), reverse=collection._reverse)
+            except:
+                pass # Sort failed (mixed types?), ignore
+        
+        # 3. Filter
+        if collection._filter_fn:
+            results = [x for x in results if collection._filter_fn(x)]
+            
+        # 4. Offset/Limit
+        start = collection._offset
+        end = start + collection._limit if collection._limit is not None else None
+        
+        return results[start:end]
+
+
 # --- Dexie-like Implementation ---
 
 class WhereClause:
@@ -727,330 +1143,7 @@ class Table:
 
     async def _execute_query(self, collection: Collection):
         """Executes a query based on the Collection definition."""
-        
-        # Optimization Strategy:
-        # Check if we can use a native cursor (single index usage + native sort).
-        # We can use native cursor if:
-        # 1. Single condition (or no condition)
-        # 2. Sorting by the SAME index as the condition (or no specific condition index)
-        # 3. No complex Python filtering (collection._filter_fn is None) - actually we can filter in loop, but efficiency varies.
-        #    If specific filter fn exists, we still benefit from not allocating ALL rows if we can stream, 
-        #    but we can't skip readily.
-        
-        conditions = collection._conditions
-        order_by = collection._order_by
-        reverse = collection._reverse
-        limit = collection._limit
-        offset = collection._offset
-        filter_fn = collection._filter_fn
-        
-        # Default condition if empty
-        if not conditions:
-            conditions = [{"index": ":primary", "op": None, "value": None}]
-
-        # Check for Native Cursor Compatibility
-        use_native_cursor = False
-        target_index = None
-        target_range_op = None
-        target_range_val = None
-        
-        # Only support native cursor strategy for single condition currently
-        if len(conditions) == 1:
-            cond = conditions[0]
-            cond_index = cond.get("index")
-            
-            # Determine the index we will iterate on
-            # If we have an explicit Order By, we MUST rely on that index for the cursor direction.
-            # If we also have a Where clause on a DIFFERENT index, we cannot do this natively (requires compound index).
-            
-            if order_by:
-                # We are forcing an order.
-                if cond_index in [":primary", ":id", None] or cond_index == order_by:
-                     # Sorting by the same thing we are filtering (or filtering all). Good.
-                     use_native_cursor = True
-                     target_index = order_by 
-                     target_range_op = cond.get("op")
-                     target_range_val = cond.get("value")
-                else:
-                     # Sorting by A, Filtering by B -> Cannot use native sorted cursor for B without scanning all.
-                     # Fallback to old "Fetch All & Sort in Memory" method.
-                     use_native_cursor = False
-            else:
-                # No specific order requested. We can iterate using the condition's index naturally.
-                use_native_cursor = True
-                target_index = cond_index
-                target_range_op = cond.get("op")
-                target_range_val = cond.get("value")
-
-            # One edge case: count() might be optimized separately, but here we are in to_array() path.
-
-        if use_native_cursor:
-            # --- Native Cursor Execution Path ---
-            
-            def cursor_logic(store):
-                # 1. Determine Target (Store vs Index)
-                target = store
-                if target_index and target_index not in [":primary", ":id"]:
-                    if store.indexNames.contains(target_index):
-                        target = store.index(target_index)
-                    else:
-                        # Fallback if index missing? Should error.
-                        pass
-                
-                # 2. Determine Range
-                key_range = None
-                from js import IDBKeyRange
-                
-                # Helper for range creation (same as before)
-                if target_range_op == "equals":
-                    key_range = IDBKeyRange.only(target_range_val)
-                elif target_range_op == "above":
-                    key_range = IDBKeyRange.lowerBound(target_range_val, True)
-                elif target_range_op == "below":
-                    key_range = IDBKeyRange.upperBound(target_range_val, True)
-                elif target_range_op == "starts_with":
-                     val = target_range_val
-                     next_val = val[:-1] + chr(ord(val[-1]) + 1)
-                     key_range = IDBKeyRange.bound(val, next_val, False, True)
-                
-                # 3. Determine Direction
-                direction = "prev" if reverse else "next"
-                
-                # 4. Open Cursor
-                # We need to use openCursor. It returns a request.
-                # However, processing the cursor is event-based (onsuccess called multiple times).
-                # _execute_ro expects a Promise/Future/Request returning a SINGLE result.
-                # We cannot just return the request here because generic _execute wrapper expects 
-                # a request that resolves to a *value* (like getAll), or we must handle the cursor *inside* 
-                # this logic but we are in the JS realm? 
-                
-                # Problem: _execute logic assumes a single-shot request.
-                # We need to wrap the cursor iteration in a Promise or handle it here and return a list.
-                # Since we are inside the 'op' callback of _execute, we can do complex things if we return a Promise.
-                
-                promise = Promise.new(create_proxy(lambda resolve, reject: _process_cursor(
-                    target, key_range, direction, offset, limit, filter_fn, resolve, reject
-                )))
-                
-                return promise
-
-            # Helper defined OUTSIDE to be safe, or INSIDE? 
-            # Needs to be available to the proxy.
-            def _process_cursor(target, key_range, direction, offset_param, limit_param, filter_fn_param, resolve, reject):
-                results = []
-                # Mutable state for stepping
-                state = {
-                    "advanced": False, 
-                    "count": 0,       # Number of items collected
-                    "skipped": 0      # Number of items skipped (for clean offset)
-                }
-                
-                has_filter = filter_fn_param is not None
-                
-                # Optimization: Can we use native advance?
-                # Only if NO filter is applied. If filter is applied, we must check items before skipping/counting.
-                can_use_native_advance = (offset_param > 0) and (not has_filter)
-                
-                req = target.openCursor(key_range, direction)
-                
-                def on_success(e):
-                    cursor = e.target.result
-                    if cursor:
-                        # 1. Handle Native Offset (Fast Skip)
-                        if can_use_native_advance and not state["advanced"]:
-                            state["advanced"] = True
-                            cursor.advance(offset_param)
-                            return # Wait for next success
-                        
-                        # 2. Get Item
-                        item = cursor.value
-                        
-                        should_include = True
-                        if has_filter:
-                             # Must convert
-                             py_item = item.to_py() if hasattr(item, 'to_py') else item
-                             if not filter_fn_param(py_item):
-                                 should_include = False
-                             else:
-                                 # Optimization: Use the py_item we already converted
-                                 item = py_item
-                        
-                        # 3. Handle Manual Offset (Slow Skip - used if filter exists)
-                        if should_include and not can_use_native_advance and offset_param > 0:
-                            if state["skipped"] < offset_param:
-                                state["skipped"] += 1
-                                should_include = False # Skip this one, it's valid but before offset
-                        
-                        if should_include:
-                            if not has_filter: # If we didn't convert yet
-                                 item = item.to_py() if hasattr(item, 'to_py') else item
-                                 
-                            results.append(item)
-                            state["count"] += 1
-                            
-                            # 4. Check Limit
-                            if limit_param is not None and state["count"] >= limit_param:
-                                resolve(to_js(results)) # Done
-                                return
-
-                        cursor.continue_()
-                    else:
-                        # End of cursor
-                        resolve(to_js(results))
-                
-                def on_error(e):
-                     reject(e.target.error)
-
-                req.onsuccess = create_proxy(on_success)
-                req.onerror = create_proxy(on_error)
-
-
-            # EXECUTE THE CURSOR LOGIC
-            # Note: _execute_ro logic unwraps promises.
-            batch_results = await self.db._execute_ro(self.name, cursor_logic)
-            
-            # The result might be a JS Promise (thenable) because cursor_logic returns a Promise,
-            # and _execute_ro returns it as-is (it only automatically awaits IDBRequests).
-            if hasattr(batch_results, 'then'):
-                batch_results = await batch_results
-            
-            # Convert JS Array Proxy to Python list
-            if hasattr(batch_results, 'to_py'):
-                 batch_results = batch_results.to_py()
-            
-            # Ensure it is a list (fallback safety)
-            if not isinstance(batch_results, list):
-                 try:
-                     batch_results = list(batch_results)
-                 except:
-                     pass # Should be list now if to_py worked, or if it was already a list.
-                     
-            # Overlay Logic (must still apply merge for optimistic UI)
-            # Simplistic Merge: The cursor stream missed optimistic updates that are NOT in IDB yet.
-            # And it might include items that are effectively deleted in Overlay.
-            # We must apply Overlay changes to this result set.
-             
-            # ... (Overlay merge code reuse needed) ...
-            results = batch_results # Already a list
-
-        else:
-            # --- Legacy Fallback Path (Fetch All + Sort in Memory) ---
-            # This handles complex OR queries or mismatched Sort/Filter
-            
-            all_results_dict = {} 
-            
-            for cond in conditions:
-                index = cond.get("index")
-                op = cond.get("op")
-                value = cond.get("value")
-                
-                def query_logic_legacy(store):
-                    target = store
-                    from js import IDBKeyRange
-                    
-                    if index and index not in [":primary", ":id"]: 
-                         if store.indexNames.contains(index):
-                             target = store.index(index)
-                    
-                    key_range = None
-                    if op == "equals":
-                        key_range = IDBKeyRange.only(value)
-                    elif op == "above":
-                        key_range = IDBKeyRange.lowerBound(value, True)
-                    elif op == "below":
-                        key_range = IDBKeyRange.upperBound(value, True)
-                    elif op == "starts_with":
-                         val = value
-                         next_val = val[:-1] + chr(ord(val[-1]) + 1)
-                         key_range = IDBKeyRange.bound(val, next_val, False, True)
-                    
-                    if key_range:
-                         return target.getAll(key_range)
-                    else:
-                         return target.getAll()
-                
-                batch = await self.db._execute_ro(self.name, query_logic_legacy)
-                
-                pk_key = self.primary_key if self.primary_key else "id"
-                for item in batch:
-                    pk_val = item.get(pk_key)
-                    if pk_val is not None:
-                        if pk_val not in all_results_dict:
-                            all_results_dict[pk_val] = item
-                            
-            results = list(all_results_dict.values())
-            
-            # Legacy In-Memory Sorting & Pagination
-            if order_by:
-                 try:
-                     results.sort(key=lambda x: x.get(order_by))
-                 except: pass
-            
-            if reverse:
-                results.reverse()
-
-            if filter_fn:
-                results = [x for x in results if filter_fn(x)]
-
-            if offset > 0:
-                results = results[offset:] if len(results) > offset else []
-
-            if limit is not None:
-                 results = results[:limit]
-
-
-        # --- Common Overlay Merge (Post-Fetch) ---
-        # Whether cursor or legacy, we need to respect the Overlay.
-        # Note for Cursor: If we paginated, the overlay might inject items that *should* be generally appear.
-        # Correct paging with optimistic updates is hard (requires knowing where they fit).
-        # We appply overlay *after* fetching page. This implies the page might grow > limit, 
-        # or include items that shouldn't be there (deleted).
-        
-        if self._overlay.active and self._overlay.visible:
-             pk = self.primary_key
-             
-             # Apply Deletes
-             deleted_keys = {k for k, v in self._overlay.mutations.items() if v['type'] == 'delete'}
-             if deleted_keys:
-                 results = [r for r in results if r.get(pk) not in deleted_keys]
-
-             # Apply Puts
-             # Issue: For cursor pagination, we might have skipped items that are now modified?
-             # Or we might have a new item that belongs in this page?
-             # Basic approach: Just ensure all local puts are potentially added/merged if they match criteria.
-             # This is "good enough" for simple optimistic UI.
-             
-             for key, op in self._overlay.mutations.items():
-                 if op['type'] == 'put':
-                      val = op['value']
-                      
-                      # Check if it matches filter/conditions
-                      # (Simplification: We assume if it's in overlay it might be valid, 
-                      # real logic requires re-evaluating where logic in python)
-                      
-                      # Merge/Replace
-                      existing_idx = -1
-                      for i, r in enumerate(results):
-                           if r.get(pk) == key:
-                               existing_idx = i
-                               break
-                      
-                      if existing_idx != -1:
-                           results[existing_idx] = val
-                      else:
-                           # Add to results? 
-                           # Only if we are not strictly paginating perfectly 
-                           # or if it falls in the range?
-                           # We add it, and let re-sorting handle it if needed.
-                           results.append(val)
-                           
-             # Re-sort if we touched things (needed for optimistic puts)
-             if order_by:
-                 try:
-                     results.sort(key=lambda x: x.get(order_by), reverse=reverse)
-                 except: pass
-
-        return results
+        return await self.db.query_engine.execute_query(collection)
 
 
 class Version:
@@ -1082,6 +1175,7 @@ class Indexie:
         self._db_instance = None
         self._tables: Dict[str, Table] = {}
         self._is_open = False
+        self.query_engine = QueryEngine(self)
         
     def version(self, v: int) -> Version:
         ver = Version(self, v)
