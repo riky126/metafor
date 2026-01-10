@@ -1,6 +1,6 @@
 from js import console, Object
 from pyodide.ffi import to_js
-
+import asyncio
 from metafor.core import create_signal, create_effect, on_mount
 from metafor.decorators import component
 from metafor.hooks import use_context, use_provider
@@ -21,7 +21,7 @@ async def is_user_logged_in(from_route, to_route, **kwargs):
     
     if not to_route.meta.get("requires_auth", False):
         print("From route requires auth")
-        return False  # Allow access
+        return True  # Allow access
     
     app_state, set_state = use_provider(container, app_provider)
     

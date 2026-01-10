@@ -56,7 +56,7 @@
     
     # --- Reactive Query Example ---
     # This list will automatically update when 'users' table changes.
-    users_list = use_live_query(lambda: db.users.to_array())
+    users_list = use_live_query(lambda: db.users.order_by("id").reverse().offset(0).limit(10).to_array())
 
     async def add_random_user():
         import random

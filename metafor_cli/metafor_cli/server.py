@@ -139,6 +139,7 @@ def run_server(host, port):
         // EventSource errors are expected during development (connection interruptions)
         // These are harmless and don't affect the app functionality
     };
+    window.addEventListener('beforeunload', () => { console.log("Closing EventSource"); evtSource.close(); });
 })();
 </script>
 </body>
