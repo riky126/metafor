@@ -289,9 +289,6 @@ class Table:
         self._version, self._set_version = create_signal(0)
         self._hook_registrar = HookRegistrar()
         self._overlay = OverlayLayer(self) # New Overlay
-        # Track active sync connection
-        self._server_push = None
-        self._sync_active = False
         
         
     @contextlib.asynccontextmanager
@@ -478,22 +475,6 @@ class Table:
                          for the snapshot fetch, allowing use of interceptors.
         """
         
-        # Prevent multiple simultaneous sync calls
-        if self._sync_active:
-            console.warn(f"[Electric Sync] Sync already active for table {self.name}, skipping duplicate call")
-            return
-        
-        # Close existing connection if any
-        if self._server_push:
-            console.log(f"[Electric Sync] Closing existing connection for table {self.name}")
-            try:
-                self._server_push.close()
-            except:
-                pass
-            self._server_push = None
-        
-        self._sync_active = True
-        
         # --- Phase 1: Initial Fetch (Snapshot) ---
         query_params = (params or {}).copy()
         
@@ -570,10 +551,15 @@ class Table:
             if py_data:
                 # If it's a string, parse it
                 if isinstance(py_data, str):
+                    # Handle SSE format: "data: <json>"
+                    clean_data = py_data.strip()
+                    if clean_data.startswith("data:"):
+                        clean_data = clean_data[5:].strip()
+                    
                     try:
-                        py_data = json.loads(py_data)
+                        py_data = json.loads(clean_data)
                     except Exception:
-                         console.error("Could not parse snapshot string")
+                         console.error(f"Could not parse snapshot string: {clean_data[:100]}...")
                          return
 
                 console.log(f"Snapshot Data Received: {py_data}")
@@ -603,113 +589,55 @@ class Table:
         sse_url = f"{url}?{urllib.parse.urlencode(sse_params)}"
         
         # Use ServerPush abstraction
-        console.log(f"[Electric Sync] Creating new ServerPush connection for table {self.name}")
         self._server_push = ServerPush(sse_url)
         
         # Define handler
         async def on_sse_message(event):
-            console.log(f"[Electric Sync] SSE Message Received: {event.data}")
+            console.log(f"SSE Message Received: {event.data}")
             try:
-                if not event.data: 
-                    console.log("[Electric Sync] Empty event.data, skipping")
-                    return
+                if not event.data: return
                 data = JSON.parse(event.data)
                 py_changes = data.to_py() if hasattr(data, 'to_py') else data
-                console.log(f"[Electric Sync] Live Update Data Received: {py_changes}")
+                console.log(f"Live Update Data Received: {py_changes}")
                 
                 if isinstance(py_changes, dict): py_changes = [py_changes]
                 
                 if py_changes:
                     for change in py_changes:
-                        # Skip None or non-dict items
-                        if not change or not isinstance(change, dict):
-                            console.warn(f"[Electric Sync] Skipping invalid change item: {change}")
+                        if change is None:
+                            console.log("Found explicitly None change, skipping.")
                             continue
                             
-                        # Get headers safely
-                        headers = change.get("headers") if isinstance(change, dict) else None
+                        # console.log(f"Processing change: {change}, type: {type(change)}")
                         
-                        # Check if this is a control message (only has headers, no value/key)
-                        if headers and isinstance(headers, dict):
-                            control = headers.get("control")
-                            if control:
-                                # This is a control message (e.g., "up-to-date", "snapshot-end")
-                                console.log(f"[Electric Sync] Control message received: {control}")
-                                if control == "up-to-date":
-                                    # Update offset if provided
-                                    lsn = headers.get("global_last_seen_lsn")
-                                    if lsn:
-                                        console.log(f"[Electric Sync] Up-to-date at LSN: {lsn}")
-                                continue  # Skip processing control messages
-                        
-                        # Process data changes
-                        key = change.get("key") if isinstance(change, dict) else None
-                        value = change.get("value") if isinstance(change, dict) else None
-                        
-                        # Skip if no key (invalid change record)
-                        if key is None:
-                            console.warn(f"[Electric Sync] Skipping change with no key: {change}")
-                            continue
-                        
-                        # Get operation from headers (safely)
-                        op = None
-                        if headers and isinstance(headers, dict):
-                            op = headers.get("operation")
-                        
-                        deleted = change.get("deleted", False) if isinstance(change, dict) else False
-                        if op == "delete":
-                            deleted = True
-                        
-                        if deleted:
-                            await self.delete(key, silent=True)
-                        else:
-                            # Skip if no value (invalid change record)
-                            if value is None:
-                                console.warn(f"[Electric Sync] Skipping change with no value: {change}")
+                        try:
+                            key = change.get("key")
+                            value = change.get("value")
+                            headers = change.get("headers") or {}
+                            
+                            # Skip control messages (e.g. up-to-date markers)
+                            if headers.get("control"):
                                 continue
-                            await self.put(value, key=key, silent=True)
+                                
+                            op = headers.get("operation")
+                            deleted = change.get("deleted") or op == "delete"
+                            
+                            if deleted:
+                                await self.delete(key, silent=True)
+                            elif value is not None:
+                                await self.put(value, key=key, silent=True)
+                                
+                        except Exception as inner_e:
+                            console.error(f"Error processing SSE change: {inner_e}")
+                            # console.error(f"Change: {change}") # Keep concise unless debugging
+                            continue
 
             except Exception as e:
-                console.error(f"[Electric Sync] SSE Message Error: {str(e)}", exc_info=True)
+                console.error(f"SSE Message Error: {str(e)}")
 
         # Register and Connect
-        console.log(f"[Electric Sync] Registering SSE handler and connecting to: {sse_url}")
         self._server_push.on_message(on_sse_message)
-        
-        # Add connection state logging
-        def on_connect(event):
-            console.log(f"[Electric Sync] SSE connection opened successfully")
-        self._server_push.on_open(on_connect)
-        
-        def on_connect_error(event):
-            # Extract error details
-            es = self._server_push._es if hasattr(self._server_push, '_es') else None
-            ready_state = getattr(es, 'readyState', None) if es else None
-            ready_state_names = {0: 'CONNECTING', 1: 'OPEN', 2: 'CLOSED'}
-            state_name = ready_state_names.get(ready_state, f'UNKNOWN({ready_state})')
-            
-            if ready_state == 2:  # CLOSED
-                console.warn(f"[Electric Sync] SSE connection closed (readyState={state_name})")
-            elif ready_state == 0:  # CONNECTING
-                console.log(f"[Electric Sync] SSE reconnecting (readyState={state_name})")
-            else:
-                console.error(f"[Electric Sync] SSE connection error (readyState={state_name})")
-        self._server_push.on_error(on_connect_error)
-        
         self._server_push.connect()
-    
-    def stop_sync(self):
-        """
-        Stops the active ElectricSQL sync connection.
-        """
-        if self._server_push:
-            console.log(f"[Electric Sync] Stopping sync for table {self.name}")
-            try:
-                self._server_push.close()
-            except Exception as e:
-                console.error(f"[Electric Sync] Error closing connection: {e}")
-            self._server_push = None
-        self._sync_active = False
 
     def to_array(self):
         # Delegate to Collection to ensure overlay logic in _execute_query is used

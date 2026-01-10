@@ -1,6 +1,6 @@
 import json
-import inspect
 import asyncio
+import inspect
 from enum import Enum
 from typing import Any, Optional, Callable, Dict, List, Union
 from pyodide.ffi import create_proxy, JsProxy
@@ -49,12 +49,6 @@ class ServerPush:
         
         # JS Handlers
         self._js_handlers = {}
-        
-        # Reconnection tracking
-        self._reconnect_count = 0
-        self._last_reconnect_time = 0
-        self._max_reconnects = 10  # Limit reconnection attempts
-        self._reconnect_window = 5000  # 5 seconds window
 
     @property
     def state(self) -> ServerPushState:
@@ -92,26 +86,17 @@ class ServerPush:
         def on_open(event):
             self.set_state(ServerPushState.OPEN)
             self.set_ready_state(self._es.readyState)
-            # Reset reconnect count on successful connection
-            self._reconnect_count = 0
-            console.log(f"ServerPush connection opened: {self.url}")
             for handler in self._on_open_handlers:
                 try: 
-                    result = handler(event)
-                    # Handle async handlers
-                    if inspect.iscoroutine(result):
-                        asyncio.create_task(result)
+                    handler(event)
                 except Exception as e:
-                    console.error(f"Error in on_open handler: {e}", exc_info=True)
+                    console.error(f"Error in on_open handler: {e}")
 
         def on_message(event):
             try:
-                message_data = getattr(event, 'data', None)
-                message_type = getattr(event, 'type', 'message')
-                console.log(f"ServerPush Message received (type={message_type}, data_length={len(message_data) if message_data else 0}): {message_data[:100] if message_data else 'None'}...")
-                
+                # console.log("ServerPush Message:", event.data)
                 # Parse JSON automatically if possible
-                message = message_data
+                message = event.data
                 try:
                     # Note: Using js.JSON.parse might be needed for complex objects, 
                     # but python json.loads is usually fine for strings.
@@ -124,80 +109,31 @@ class ServerPush:
                 except:
                     pass
                 
-                if not self._on_message_handlers:
-                    console.warn("ServerPush: No message handlers registered!")
-                
                 for handler in self._on_message_handlers:
                     try:
-                        console.log(f"ServerPush: Calling handler {handler}")
-                        result = handler(event) # Pass the full event or just data? Usually event.
-                        # Handle async handlers
-                        if inspect.iscoroutine(result):
-                            console.log(f"ServerPush: Handler returned coroutine, scheduling task")
-                            asyncio.create_task(result)
-                        else:
-                            console.log(f"ServerPush: Handler completed synchronously")
+                        res = handler(event) # Pass the full event or just data? Usually event.
+                        if inspect.iscoroutine(res):
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                loop.create_task(res)
+                            else:
+                                asyncio.create_task(res)
                     except Exception as e:
-                        console.error(f"Error in on_message handler: {e}", exc_info=True)
+                        console.error(f"Error in on_message handler: {e}")
 
             except Exception as e:
-                console.error(f"Error processing ServerPush message: {e}", exc_info=True)
+                console.error(f"Error processing ServerPush message: {e}")
 
         def on_error(event):
             # EventSource attempts reconnect automatically, but we should notify.
-            # Extract useful error information
-            error_info = {
-                'type': getattr(event, 'type', 'unknown'),
-                'target_readyState': getattr(self._es, 'readyState', None) if self._es else None,
-                'target_url': getattr(self._es, 'url', None) if self._es else None,
-                'target_withCredentials': getattr(self._es, 'withCredentials', None) if self._es else None,
-            }
-            
-            # EventSource readyState: 0=CONNECTING, 1=OPEN, 2=CLOSED
-            # An error event doesn't necessarily mean failure - EventSource auto-reconnects
-            ready_state = error_info['target_readyState']
-            
-            # Track reconnection attempts to prevent loops
-            from js import Date
-            current_time = Date.now()  # milliseconds
-            
-            if ready_state == ES_CLOSED:
-                # Connection was closed (could be intentional or error)
-                # Check if we're in a reconnection loop
-                if current_time - self._last_reconnect_time < self._reconnect_window:
-                    self._reconnect_count += 1
-                else:
-                    self._reconnect_count = 1
-                
-                self._last_reconnect_time = current_time
-                
-                if self._reconnect_count > self._max_reconnects:
-                    console.error(f"ServerPush: Too many reconnection attempts ({self._reconnect_count}), stopping. URL: {self.url}")
-                    self.set_state(ServerPushState.CLOSED)
-                    if self._es:
-                        self._es.close()
-                    return
-                
-                console.warn(f"ServerPush connection closed (reconnect {self._reconnect_count}/{self._max_reconnects}): {self.url}")
-                self.set_state(ServerPushState.CLOSED)
-            elif ready_state == ES_CONNECTING:
-                # EventSource is attempting to reconnect
-                # Only log if not in rapid reconnect loop
-                if self._reconnect_count <= 3:
-                    console.log(f"ServerPush reconnecting: {self.url}")
-                self.set_state(ServerPushState.CONNECTING)
-            else:
-                # Other error state
-                console.error(f"ServerPush error (readyState={ready_state}): {error_info}")
+            # State might flicker to CONNECTING.
+            # self.set_state(ServerPushState.CONNECTING) # Maybe?
             
             for handler in self._on_error_handlers:
                 try:
-                    result = handler(event)
-                    # Handle async handlers
-                    if inspect.iscoroutine(result):
-                        asyncio.create_task(result)
+                    handler(event)
                 except Exception as e:
-                    console.error(f"Error in on_error handler: {e}", exc_info=True)
+                    console.error(f"Error in on_error handler: {e}")
 
         self._js_handlers = {
             'open': self._create_js_proxy(on_open),
@@ -205,20 +141,9 @@ class ServerPush:
             'error': self._create_js_proxy(on_error)
         }
 
-        # Verify EventSource supports these event types
-        console.log(f"ServerPush: Setting up event listeners for EventSource at {self.url}")
-        console.log(f"ServerPush: EventSource readyState before listeners: {self._es.readyState}")
-        console.log(f"ServerPush: Number of message handlers registered: {len(self._on_message_handlers)}")
-        
         self._es.addEventListener('open', self._js_handlers['open'])
         self._es.addEventListener('message', self._js_handlers['message'])
         self._es.addEventListener('error', self._js_handlers['error'])
-        
-        console.log(f"ServerPush: Event listeners registered. readyState: {self._es.readyState}")
-        
-        # Log EventSource properties for debugging
-        console.log(f"ServerPush: EventSource URL: {getattr(self._es, 'url', 'N/A')}")
-        console.log(f"ServerPush: EventSource withCredentials: {getattr(self._es, 'withCredentials', 'N/A')}")
 
     def close(self):
         """Close the connection."""
