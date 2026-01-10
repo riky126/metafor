@@ -140,7 +140,10 @@ class Collection:
     
     def to_array(self) -> List[Dict[str, Any]]:
         self.table._version() # Track dependency
-        return self.table._execute_query(self)
+        # return self.table._execute_query(self)
+        async def _call_execute_query():
+             return await self.table._execute_query(self)
+        return _call_execute_query()
 
     def first(self) -> Optional[Dict[str, Any]]:
         # Sync wrapper returning coroutine
@@ -356,7 +359,6 @@ class Table:
     async def put(self, item: Dict[str, Any], key: Any = None, silent: bool = False):
         pk_val = key or item.get(self.primary_key)
         
-        # 1. Overlay
         # 1. Overlay
         if self._overlay.active:
              res = self._overlay.put(item, key)
@@ -1152,21 +1154,42 @@ class Indexie:
             future = asyncio.Future()
             
             def success(e):
-                res = e.target.result
-                # Auto-convert generic results
-                if hasattr(res, 'to_py'):
-                     res = res.to_py()
-                # If the op returned a tuple (req, extra_info), handle it? 
-                # No, op() returns the Request object directly usually.
-                future.set_result(res)
+                try:
+                    res = e.target.result
+                    # Auto-convert generic results
+                    if hasattr(res, 'to_py'):
+                         res = res.to_py()
+                    future.set_result(res)
+                except Exception as ex:
+                    console.error(f"IDB Success Callback Error: {ex}")
+                    if not future.done():
+                        future.set_exception(ex)
                 
             def error(e):
-                future.set_exception(IndexedDBError(str(e.target.error)))
+                try:
+                    err_msg = str(e.target.error) if e.target and e.target.error else "Unknown IDB Error"
+                    if not future.done():
+                        future.set_exception(IndexedDBError(err_msg))
+                except Exception as ex:
+                    console.error(f"IDB Error Callback Error: {ex}")
+                    if not future.done():
+                        future.set_exception(ex)
                 
-            req.onsuccess = create_proxy(success)
-            req.onerror = create_proxy(error)
+            # Keep references to proxies to prevent GC
+            req._onsuccess_proxy = create_proxy(success)
+            req._onerror_proxy = create_proxy(error)
             
-            return await future
+            req.onsuccess = req._onsuccess_proxy
+            req.onerror = req._onerror_proxy
+            
+            try:
+                return await future
+            finally:
+                # Cleanup proxies if needed? Usually attached to req is fine.
+                # But req is short-lived.
+                req._onsuccess_proxy.destroy()
+                req._onerror_proxy.destroy()
+                
         return req
 
 

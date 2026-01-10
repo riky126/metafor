@@ -104,14 +104,18 @@
             params={"table": "users"},
             http_client=http_client
         )
+        
 
     def on_mounted():
         asyncio.create_task(init_electric())
 
     on_mount(on_mounted)
 
-    
-        
+    async def do_update():
+        await db.users.put({"name": 'John Doe', "email": 'john@mail.com', "id": 10})
+
+    def update_person(e):
+        asyncio.create_task(do_update())
     
 }
 
@@ -130,12 +134,13 @@
             <div style="margin-bottom: 10px;">
                 <sl-button onClick=@{on_add_click}>Add Random User</sl-button>
                 <sl-button onClick=@{on_clear_click} style="margin-left: 10px;">Clear All</sl-button>
+                <sl-button onClick=@{update_person} style="margin-left: 10px;">Update Person</sl-button>
             </div>
             
             <div>
                 <strong>Total Users: @{lambda: len(users_list() or [])}</strong>
                 <ul>
-                    @foreach u in users_list, key=lambda u, _: u.get('id') {
+                    @foreach u in users_list {
                         <li>@{u.get('name')} (@{u.get('email')})</li> 
                     } -> @fallback {
                         <li>No users found</li>

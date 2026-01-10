@@ -100,7 +100,9 @@ def For(each: Union[Signal, Callable[[], List[Any]], List[Any]],
                 # Update existing node
                 new_child = children(item, i)
                 if isinstance(new_child, DOMNode):
-                    update_node(node, new_child)
+                    # update_node(node, new_child) # Update node fails to update children in DOM
+                    replace_node(parent, new_child, key_value)
+                    node = new_child
                 else:
                     # Convert non-DOMNode to DOMNode
                     node = t.span({"key": key_value}, [str(new_child)])
