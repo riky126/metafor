@@ -32,6 +32,8 @@ class Field:
         self.field_path: Optional[str] = None  # For nested fields
         self.default_value_attr: Any = _UNSET # Use sentinel
         self.required_message: str = "This field is required."
+        self.match_error_message: Optional[str] = None
+        self.match_target: Optional[str] = None
         
     # -- Primitives ---
     def string(self) -> 'Field':
@@ -217,7 +219,7 @@ class Field:
         Ensures this field matches another field's value.
         Validation occurs during Schema validation where form_data is available.
         """
-        self.field_path = field_name
+        self.match_target = field_name
         self.match_error_message = error_message
         # No validator function added here; handled directly in Schema.validate
         return self
@@ -359,8 +361,8 @@ class Schema:
                         field_errors.append(error_message)
             
             # 6. Check 'matches' validation
-            if field.field_path:
-                target_value = form_data.get(field.field_path)
+            if field.match_target:
+                target_value = form_data.get(field.match_target)
                 # Only compare if the current field's value is not None (or None is disallowed)
                 # And the target field's value is also not None (common use case)
                 # Adjust this logic if None should be comparable

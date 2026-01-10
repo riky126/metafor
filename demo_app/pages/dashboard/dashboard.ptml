@@ -118,7 +118,7 @@
     
 
     async def do_update():
-        await db.users.put({"name": 'John Doe', "email": 'john@mail.com', "id": 10})
+        await db.users.put({"name": 'John Doe', "email": 'john@mail.com', "id": 4})
 
     def update_person(e):
         asyncio.create_task(do_update())

@@ -7,7 +7,7 @@ from enum import Enum
 from js import console
 from metafor.core import create_signal
 
-from .support import Support, IndexedDBError, _to_js_obj
+from .support import Support, IndexedDBError, StorageError, _to_js_obj
 
 class Strategy(Enum):
     LOCAL_FIRST = "local_first"
@@ -107,12 +107,15 @@ class OverlayLayer:
              self.table._set_version(self.table._version.peek() + 1)
         self.visible = True
 
+from metafor.form.schema import Schema
+
 class Table:
-    def __init__(self, name: str, db: 'Indexie', primary_key: str = None, strategy: Strategy = Strategy.LOCAL_FIRST):
+    def __init__(self, name: str, db: 'Indexie', primary_key: str = None, strategy: Strategy = Strategy.LOCAL_FIRST, schema: Schema = None):
         self.name = name
         self.db = db
         self.primary_key = primary_key
         self.strategy = strategy
+        self.schema = schema
         self._version, self._set_version = create_signal(0)
         self._hook_registrar = HookRegistrar()
         self._overlay = OverlayLayer(self)
@@ -131,6 +134,17 @@ class Table:
              if self._overlay.active:
                   await self._overlay.rollback()
         
+    def attach_schema(self, schema: Schema):
+        """Attaches a validation schema to the table."""
+        self.schema = schema
+        return self
+
+    def _validate_item(self, item: Dict[str, Any]):
+        if self.schema:
+            errors = self.schema.validate(item)
+            if errors:
+                raise StorageError(f"Validation failed for table '{self.name}': {errors}")
+
     @property
     def hook(self):
         return self._hook_registrar
@@ -139,6 +153,9 @@ class Table:
         await self._hook_registrar._trigger(event, payload)
         
     async def add(self, item: Dict[str, Any], key: Any = None, silent: bool = False):
+        # Validate before any operation
+        self._validate_item(item)
+
         # 1. Overlay
         if self._overlay.active:
              res = self._overlay.add(item, key)
@@ -166,6 +183,9 @@ class Table:
             return res
         
     async def put(self, item: Dict[str, Any], key: Any = None, silent: bool = False):
+        # Validate before any operation
+        self._validate_item(item)
+
         pk_val = key or item.get(self.primary_key)
         
         # 1. Overlay

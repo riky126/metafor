@@ -198,6 +198,54 @@ except Exception as e:
 *   **.order_by(key)**: Sort results.
 *   **.each(callback)**: Iterate over results.
 
+## Schema Validation
+
+Indexie supports strict application-side schema validation using `metafor.form.schema`. This ensures that data written to your tables (`add`, `put`, `update`) conforms to defined rules.
+
+### Defining a Schema
+
+Create a `Schema` object and define fields with their types and validation rules.
+
+```python
+from metafor.form.schema import Schema
+
+# Define User Schema
+user_schema = Schema()
+user_schema.field("name").string().required().trim()
+user_schema.field("email").string().email().required()
+user_schema.field("age").int().min_value(18).optional()
+
+# Arrays and Nested Objects are supported
+# user_schema.array("tags", Schema().field("tag").string())
+```
+
+### Attaching to a Table
+
+You can attach a schema to a table at any time, usually during initialization.
+
+```python
+# Attach schema to 'users' table
+db.users.attach_schema(user_schema)
+```
+
+### Validation in Action
+
+Once attached, any write operation will validate the input data. If validation fails, a `StorageError` is raised containing the specific validation errors.
+
+```python
+from metafor.storage import StorageError
+
+try:
+    # This will fail if name is missing or age < 18
+    await db.users.add({
+        "email": "kid@example.com", 
+        "age": 10
+    })
+except StorageError as e:
+    # e.message will contain details: "Validation failed for table 'users': {'name': ['Required'], 'age': ['Must be >= 18']}"
+    console.error(str(e))
+```
+
 ## Reactive & Real-Time Sync
 
 Indexie includes advanced features for building reactive, local-first applications.

@@ -1,4 +1,5 @@
 from metafor.storage import Indexie
+from metafor.form.schema import Schema
 
 # Initialize Indexie DB
 db = Indexie("MyApp")
@@ -8,3 +9,14 @@ db.version(1).stores({
     "myStore": "++id",
     "users": "++id, &email, name"
 })
+
+# Define User Schema Validation
+user_schema = Schema()
+user_schema.field("id").int().optional()
+user_schema.field("name").string().required().trim()
+user_schema.field("email").string().email().required().trim()
+# You can add more fields here as needed, e.g.
+# user_schema.field("role").string().optional()
+
+# Attach schema to table
+db.users.attach_schema(user_schema)
