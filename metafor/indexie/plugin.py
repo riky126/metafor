@@ -207,13 +207,13 @@ class Table:
             res = self._overlay.add(item, key)
             if not silent and self._overlay.visible:
                  # Trigger hook immediately for Optimistic Sync/Manual Control
-                 await self._trigger_hook("on_add", {"item": item, "key": res, "optimistic": True})
+                 await self._trigger_hook("on_add", {"value": item, "key": res, "optimistic": True})
             return res
 
         res = await self.db.query_engine.add(self.name, item, key)
         self._set_version(self._version.peek() + 1)
         if not silent:
-             await self._trigger_hook("on_add", {"item": item, "key": res, "optimistic": optimistic})
+             await self._trigger_hook("on_add", {"value": item, "key": res, "optimistic": optimistic})
         return res
         
     async def put(self, item: Dict[str, Any], key: Any = None, silent: bool = False, optimistic: bool = False):
@@ -242,7 +242,7 @@ class Table:
             if not silent and self._overlay.visible:
                  # For optimistic manual sync, we need to provide base_rev to SyncManager refinement
                  await self._trigger_hook("on_update", {
-                     "item": item, 
+                     "value": item, 
                      "key": res, 
                      "base_rev": base_rev, 
                      "base_doc": old_item,
@@ -262,7 +262,7 @@ class Table:
 
         if self.strategy == Strategy.NETWORK_FIRST and not silent:
             # For Network First, we trigger before IDB call
-            await self._trigger_hook("on_update", {"item": item, "key": pk_val, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
+            await self._trigger_hook("on_update", {"value": item, "key": pk_val, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
             
             res = await self.db.query_engine.put(self.name, item, key)
             self._set_version(self._version.peek() + 1)
@@ -272,7 +272,7 @@ class Table:
             self._set_version(self._version.peek() + 1)
             if not silent:
                 # IMPORTANT: Use 'res' here because pk_val might be None for new records (auto-increment)
-                await self._trigger_hook("on_update", {"item": item, "key": res, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
+                await self._trigger_hook("on_update", {"value": item, "key": res, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
             return res
         
     def get(self, key: Any):

@@ -85,16 +85,25 @@
     # --- TanStack-style Hook Example ---
     # Simulate backend sync on adding user
     async def on_user_add(payload):
-        # payload = {"item": ..., "key": ...}
-        item = payload['value']
+        # payload = {"item": ..., "key": ...} (Raw) or {"value": ..., ...} (Synced)
+        item = payload.get('value')
+        
         console.log(f"Syncing user name: {item['name']} to backend (async)...")
         print(payload)
         
-        await do_sync({"mutations": [payload]}) # Simulate network
+        # await do_sync({"mutations": [payload]}) # Simulate network
         console.log(f"Synced user {item['name']}!")
         # In real app: await fetch("/api/users", method="POST", body=item)
+
+    async def on_delete_user(payload):
+        console.log(f"Deleting user from backend (async)...")
+        print(payload)
+        await do_sync({"mutations": [payload]}) 
+    
         
     db.users.hook.on_add(on_user_add)
+    # db.users.hook.on_delete(on_delete_user)
+    
 
     async def init_electric():
         # --- ElectricSQL Sync Demo ---

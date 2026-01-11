@@ -10,7 +10,7 @@ db.version(2).stores({
     "users": "++id, &email, name"
 })
 
-db.enable_sync("http://localhost:8000/sync", pull_enabled=True)
+# db.enable_sync("http://localhost:8000/sync", pull_enabled=True)
 
 # Define User Schema Validation
 user_schema = Schema()

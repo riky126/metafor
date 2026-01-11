@@ -343,7 +343,8 @@ class SyncManager:
 
     async def _handle_hook_event(self, table_name: str, event_type: str, payload: Dict[str, Any]):
         """Unified handler for table hooks."""
-        item = payload.get("item")
+        # Unify item/value access (Supports unified 'value' key, fallback to 'item')
+        item = payload.get("value", payload.get("item"))
         if item: item = item.copy()
         
         key = payload.get("key")
