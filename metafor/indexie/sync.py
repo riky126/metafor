@@ -173,25 +173,72 @@ class SyncManager:
     
     def __init__(self, db, upstream_url: str, push_interval: int = 5000, 
                  pull_enabled: bool = True, conflict_handler: Optional[Callable] = None,
-                 conflict_strategy: str = ConflictStrategy.LAST_WRITE_WINS):
+                 conflict_strategy: str = ConflictStrategy.LAST_WRITE_WINS,
+                 push_path: str = "/push", pull_path: str = "/pull"):
         self.db = db
-        self.upstream_url = upstream_url
+        self.upstream_url = upstream_url.rstrip('/')
         self.push_interval = push_interval
         self.pull_enabled = pull_enabled
         self.conflict_handler = conflict_handler
         self.conflict_strategy = conflict_strategy
+        self.push_path = push_path
+        self.pull_path = pull_path
         
         self.queue = OfflineQueue(db)
         self.state = ReplicationState(db)
         self.conflict_history = ConflictHistory(db)
         
         self._is_online = navigator.onLine
+        self._server_reachable = True # Assume reachable until proven otherwise? Or start False?
+        # Let's start True if assume Online, but maybe better to ping on start.
+        
         self._sync_task = None
         self._running = False
 
     @property
     def is_online(self) -> bool:
-        return self._is_online
+        # We are online only if browser is online AND server is reachable
+        return self._is_online and self._server_reachable
+
+    def _set_reachable(self, reachable: bool, error: str = None):
+        if self._server_reachable != reachable:
+            if reachable:
+                console.log("SyncManager: Connection established with sync server")
+            else:
+                msg = f"SyncManager: {error} - Unable to reach sync server" if error else "SyncManager: Unable to reach sync server"
+                console.warn(msg)
+            self._server_reachable = reachable
+        elif not reachable and error:
+             # Even if already unreachable, if we have a new error during explicit check, maybe log it?
+             # User asked for: "am seeing this message... the sync manager should print..."
+             # If we silently ignore repeated errors, user might think check didn't run.
+             # But we don't want to spam loop errors.
+             # check_connection is explicit, so we might want to log there?
+             # But for now let's stick to state change logging or specific error logging.
+             pass
+
+    async def check_connection(self) -> bool:
+        """Explicitly check if the server is reachable."""
+        try:
+            from js import fetch
+            # Use HEAD or GET to pull endpoint as lightweight check
+            url = f"{self.upstream_url}{self.pull_path}"
+            # Add timestamp to bypass cache
+            url += f"?ping={int(time.time()*1000)}"
+            
+            resp = await fetch(url, _to_js_obj({"method": "GET", "credentials": "include"}))
+            
+            if resp.ok:
+                self._set_reachable(True)
+                return True
+            else:
+                # console.warn(f"SyncManager: check_connection failed: {resp.status}")
+                self._set_reachable(False, error=f"HTTP {resp.status}")
+                return False
+        except Exception as e:
+            # console.warn(f"SyncManager: check_connection error: {e}")
+            self._set_reachable(False, error=str(e))
+            return False
 
     def start(self):
         self._running = True
@@ -267,9 +314,15 @@ class SyncManager:
     async def _process_loop(self):
         while self._running:
             if self._is_online:
-                await self._push()
-                if self.pull_enabled:
-                    await self._pull()
+                # If we think we are online but server marked unreachable, try to ping
+                if not self._server_reachable:
+                    await self.check_connection()
+                
+                # If confirmed reachable (or optimistically true), proceed
+                if self._server_reachable:
+                    await self._push()
+                    if self.pull_enabled:
+                        await self._pull()
             
             await asyncio.sleep(self.push_interval / 1000)
 
@@ -278,7 +331,7 @@ class SyncManager:
             cursor = await self.state.get_cursor()
             
             # Construct URL
-            url = f"{self.upstream_url}/pull"
+            url = f"{self.upstream_url}{self.pull_path}"
             if cursor:
                 url += f"?checkpoint={cursor}"
                 
@@ -292,7 +345,14 @@ class SyncManager:
             
             if not resp.ok:
                 console.warn(f"SyncManager: Pull failed {resp.status}")
+                # 404/500/403 might mean server issues, but reachable. 
+                # Network errors throw exception. 
+                # If 503, maybe unreachable. simpler to assume reachable if we got a response code.
+                if resp.status in (502, 503, 504): # Gateway errors
+                    self._set_reachable(False)
                 return
+            
+            self._set_reachable(True) # Success confirms reachability
 
             data = await resp.json()
             if hasattr(data, "to_py"): data = data.to_py()
@@ -380,8 +440,11 @@ class SyncManager:
             if checkpoint:
                 await self.state.set_cursor(checkpoint)
                 
+                
         except Exception as e:
             console.error(f"SyncManager Pull Error: {e}")
+            # Likely network error
+            self._set_reachable(False)
 
     async def _resolve_conflict(self, conflict: Conflict, table: Table, key: Any) -> bool:
         """
@@ -501,15 +564,19 @@ class SyncManager:
                 "credentials": "include"
             }
             
-            resp = await fetch(f"{self.upstream_url}/push", _to_js_obj(options))
+            resp = await fetch(f"{self.upstream_url}{self.push_path}", _to_js_obj(options))
             
             if resp.ok:
                 # Remove processed
                 ids = [m["id"] for m in mutations]
                 await self.queue.remove(ids)
                 console.log(f"SyncManager: Pushed {len(ids)} mutations")
+                self._set_reachable(True) # Success
             else:
                 console.warn(f"SyncManager: Push failed {resp.status}")
+                if resp.status in (502, 503, 504):
+                    self._set_reachable(False)
 
         except Exception as e:
             console.error(f"SyncManager Push Error: {e}")
+            self._set_reachable(False)

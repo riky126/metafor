@@ -9,6 +9,7 @@ from pyodide.ffi import create_proxy, to_js
 from .plugin import Table, Version
 from .query_engine import QueryEngine
 from .support import IndexedDBError, _to_js_obj
+from .sync import SyncManager
 
 # --- Transaction Context ---
 _current_transaction_var = contextvars.ContextVar("current_transaction", default=None)
@@ -29,7 +30,8 @@ class Indexie:
         
     def enable_sync(self, upstream_url: str, pull_enabled: bool = True, 
                     conflict_handler: Optional[Callable] = None,
-                    conflict_strategy: str = "last_write_wins"):
+                    conflict_strategy: str = SyncManager.ConflictStrategy.LAST_WRITE_WINS,
+                    push_path: str = "/push", pull_path: str = "/pull"):
         """
         Enable synchronization with conflict resolution.
         
@@ -43,6 +45,8 @@ class Indexie:
                 - "remote_wins": Always accept remote version
                 - "merge": Merge both documents (remote takes precedence)
                 - "custom": Use conflict_handler function
+            push_path: Custom push endpoint path (default: /push)
+            pull_path: Custom pull endpoint path (default: /pull)
         """
         from .sync import SyncManager, OfflineQueue, ReplicationState, ConflictHistory
         self.sync_manager = SyncManager(
@@ -50,7 +54,9 @@ class Indexie:
             upstream_url, 
             pull_enabled=pull_enabled,
             conflict_handler=conflict_handler,
-            conflict_strategy=conflict_strategy
+            conflict_strategy=conflict_strategy,
+            push_path=push_path,
+            pull_path=pull_path
         )
         
         # Register system tables so they are accessible via db.table(...) if needed, 

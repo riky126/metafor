@@ -84,53 +84,64 @@ await db.open()
 
 ### Conflict Resolution
 
-The sync engine supports multiple conflict resolution strategies:
+When a new document payload is received from the server (Pull), the Sync Engine performs the following checks:
 
-```python
-# 1. Last Write Wins (default)
-# Uses document with latest _lastModified timestamp
-db.enable_sync("https://api.example.com/sync", conflict_strategy="last_write_wins")
-
-# 2. Local Wins
-# Always keep the local version
-db.enable_sync("https://api.example.com/sync", conflict_strategy="local_wins")
-
-# 3. Remote Wins
-# Always accept the remote version
-db.enable_sync("https://api.example.com/sync", conflict_strategy="remote_wins")
-
-# 4. Merge
-# Combine both documents (remote takes precedence for overlapping keys)
-db.enable_sync("https://api.example.com/sync", conflict_strategy="merge")
-
-# 5. Custom Handler
-async def my_conflict_handler(conflict):
-    """
-    Custom conflict resolution function.
-    
-    Args:
-        conflict: Conflict object with:
-            - table_name: str
-            - key: Any
-            - local_doc: Dict (local version)
-            - remote_doc: Dict (remote version)
-            - local_rev: str (local revision)
-            - remote_rev: str (remote revision)
-    
-    Returns:
-        Dict: The resolved document to use
-    """
-    # Example: Merge with custom logic
-    resolved = {**conflict.local_doc, **conflict.remote_doc}
-    # Your custom logic here...
-    return resolved
-
-db.enable_sync(
-    "https://api.example.com/sync",
-    conflict_strategy="custom",
-    conflict_handler=my_conflict_handler
-)
+```mermaid
+graph TD
+    A[Receive Remote Document] --> B{Local Document Exists?}
+    B -->|No| C[Insert New Document]
+    B -->|Yes| D{Compare _rev}
+    D -->|Match| E[Update Local Document]
+    D -->|Mismatch| F{Detect Conflict}
+    F --> G[Conflict Strategy]
+    G -->|Last Write Wins| H[Compare timestamps]
+    G -->|Local Wins| I[Keep Local]
+    G -->|Remote Wins| J[Overwrite with Remote]
+    G -->|Merge| K[Merge Fields]
+    G -->|Custom| L[Run Custom Handler]
+    H --> M[Apply Winner]
+    I --> N[Discard Remote]
+    J --> O[Apply Remote]
+    K --> P[Apply Merged]
+    L --> Q[Apply Handler Result]
 ```
+
+#### Resolution Strategies
+
+1.  **Last Write Wins (Default)**: Compares `_lastModified` timestamps. The document with the later timestamp wins.
+    ```python
+    db.enable_sync(url, conflict_strategy=SyncManager.ConflictStrategy.LAST_WRITE_WINS)
+    ```
+
+2.  **Local Wins**: Always ignores the remote update if a conflict exists.
+    ```python
+    db.enable_sync(url, conflict_strategy=SyncManager.ConflictStrategy.LOCAL_WINS)
+    ```
+
+3.  **Remote Wins**: Always overwrites the local version with the remote version.
+    ```python
+    db.enable_sync(url, conflict_strategy=SyncManager.ConflictStrategy.REMOTE_WINS)
+    ```
+
+4.  **Merge**: Combines fields from both documents. Remote fields take precedence for overlapping keys.
+    ```python
+    db.enable_sync(url, conflict_strategy=SyncManager.ConflictStrategy.MERGE)
+    ```
+
+5.  **Custom Handler**: Define your own logic.
+    ```python
+    async def resolve_conflict(conflict):
+        # conflict.local_doc, conflict.remote_doc, conflict.table_name...
+        if conflict.local_doc["version"] > conflict.remote_doc["version"]:
+            return conflict.local_doc
+        return conflict.remote_doc
+
+    db.enable_sync(
+        url, 
+        conflict_strategy=SyncManager.ConflictStrategy.CUSTOM,
+        conflict_handler=resolve_conflict
+    )
+    ```
 
 ### Inspecting Conflicts
 
