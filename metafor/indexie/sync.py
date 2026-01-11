@@ -117,12 +117,31 @@ class OfflineQueue:
         if value and isinstance(value, dict) and op in ("put", "add"):
             _ensure_revision(value)
         
+        # Optimization: Store Reference Only (State-Based Sync)
+        # We store metadata to allow hydration but avoid full copy
+        stored_value = value
+        if op in ("put", "add") and isinstance(value, dict):
+             # User requested structure: {ref_row: table_row_id, _lastModified: ..., _rev: ...}
+             stored_value = {
+                 "ref_row": key,
+                 "_lastModified": value.get("_lastModified", time.time() * 1000),
+                 "_rev": value.get("_rev")
+             }
+        
+        # Coalesce: Remove existing ops for this table+key to prevent duplicates
+        # This ensures we only sync the *latest* state for a given key.
+        all_items = await self.table.to_array()
+        for item in all_items:
+            if item.get("table") == table_name and item.get("key") == key:
+                console.log(f"OfflineQueue: Coalescing - removing prev mutation {item['id']} for {table_name}:{key}")
+                await self.table.delete(item["id"])
+
         mutation = {
             "id": str(uuid.uuid4()),
             "table": table_name,
             "op": op,
             "key": key,
-            "value": value,
+            "value": stored_value,
             "timestamp": time.time() * 1000
         }
         console.log(f"OfflineQueue: Attempting to add mutation: {mutation}")
@@ -252,6 +271,27 @@ class SyncManager:
         # Start Loop
         self._sync_task = asyncio.create_task(self._process_loop())
         console.log("SyncManager: Started")
+        
+        self._trigger_task = None
+
+    def _trigger_push(self):
+        """Schedule an immediate push (debounced)."""
+        if not self._is_online or not self._server_reachable: return
+        
+        async def _run_push():
+            await asyncio.sleep(0.5) # 500ms debounce
+            await self._push()
+            self._trigger_task = None
+            
+        if self._trigger_task:
+            self._trigger_task.cancel()
+            
+        # We need a running loop
+        try:
+             loop = asyncio.get_event_loop()
+             if loop.is_running():
+                 self._trigger_task = loop.create_task(_run_push())
+        except: pass
 
     def stop(self):
         self._running = False
@@ -294,6 +334,7 @@ class SyncManager:
                 if item:
                     _ensure_revision(item)
                 await self.queue.enqueue(table_name, "put", payload["key"], item)
+                self._trigger_push()
             
             async def on_update(payload):
                 item = payload["item"].copy() if payload.get("item") else None
@@ -301,9 +342,11 @@ class SyncManager:
                 if item:
                     _ensure_revision(item)
                 await self.queue.enqueue(table_name, "put", payload["key"], item)
+                self._trigger_push()
                 
             async def on_delete(payload):
                 await self.queue.enqueue(table_name, "delete", payload["key"])
+                self._trigger_push()
 
             table.hook.on_add(on_add)
             table.hook.on_update(on_update)
@@ -541,8 +584,37 @@ class SyncManager:
             if not mutations: return
 
             # Transform for transport
+            hydrated_mutations = []
+            
+            for m in mutations:
+                val = m.get("value")
+                # Check for reference object structure (State-Based Sync)
+                if m["op"] in ("put", "add") and isinstance(val, dict) and "ref_row" in val:
+                    # Hydrate from DB
+                    table = self.db.table(m["table"])
+                    if table:
+                        current_val = await table.get(val["ref_row"])
+                        if current_val:
+                            # Ensure revision is present
+                            if "_rev" not in current_val:
+                                _set_revision(current_val)
+                            m["value"] = current_val
+                            hydrated_mutations.append(m)
+                        else:
+                            # Document deleted locally, skip push
+                            console.log(f"SyncManager: Skipping push for {m['table']}:{m['key']} - Document not found (deleted?)")
+                            pass
+                else:
+                    hydrated_mutations.append(m)
+
+            if not hydrated_mutations:
+                 # If all were skipped, remove from queue and return
+                 ids = [m["id"] for m in mutations]
+                 await self.queue.remove(ids)
+                 return
+
             payload = {
-                "mutations": mutations,
+                "mutations": hydrated_mutations,
                 "client_id": str(self.db.name) # Use DB name or unique client ID
             }
             
@@ -567,10 +639,32 @@ class SyncManager:
             resp = await fetch(f"{self.upstream_url}{self.push_path}", _to_js_obj(options))
             
             if resp.ok:
-                # Remove processed
-                ids = [m["id"] for m in mutations]
-                await self.queue.remove(ids)
-                console.log(f"SyncManager: Pushed {len(ids)} mutations")
+                # Parse confirmation receipt
+                data = await resp.json()
+                if hasattr(data, "to_py"): data = data.to_py()
+                
+                receipts = data.get("sync_receipts", [])
+                confirmed_keys = set()
+                for r in receipts:
+                    if isinstance(r, dict) and "key" in r:
+                        confirmed_keys.add(r["key"])
+
+                # Remove processed items
+                # 1. Skipped items (not in hydrated_mutations) are always removed (locally handled)
+                # 2. Sent items are removed ONLY if confirmed by server
+                sent_mutation_ids = set(m["id"] for m in hydrated_mutations)
+                ids_to_remove = []
+                
+                for m in mutations:
+                    if m["id"] not in sent_mutation_ids:
+                        ids_to_remove.append(m["id"])
+                    elif m["key"] in confirmed_keys:
+                        ids_to_remove.append(m["id"])
+                
+                if ids_to_remove:
+                    await self.queue.remove(ids_to_remove)
+                    console.log(f"SyncManager: Pushed and confirmed {len(ids_to_remove)} mutations")
+                
                 self._set_reachable(True) # Success
             else:
                 console.warn(f"SyncManager: Push failed {resp.status}")

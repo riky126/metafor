@@ -171,6 +171,16 @@ In this mode:
 
 The `start_transaction(optimistic=True)` context manager is network-aware, providing the best user experience based on connectivity.
 
+### Current Optimizations
+*   **Batching**: Mutations are pushed in batches (default: 50) to minimize HTTP overhead.
+*   **Delta Pulls**: Uses a `checkpoint` cursor to fetch only new data from the server.
+*   **Background Processing**: Sync runs in a non-blocking background loop.
+*   **Latency (Immediate Trigger)**: Writes automatically trigger an immediate (debounced) push attempt, ensuring near-instant synchronization without waiting for the periodic interval.
+
+### Missing Optimizations (Potential Improvements)
+*   **Bandwidth (Diff Sync)**: The engine currently sends the full document on every update. It does not calculate or send field-level diffs, which would save bandwidth for large documents with small changes.
+*   **Parallelism**: The `_process_loop` runs Push and Pull operations sequentially. Running them in parallel tasks could improve throughput in some scenarios.
+
 ### Online Behavior
 -   **Mode**: Optimistic UI.
 -   **Mechanism**: Writes are applied to an in-memory **Overlay**. The UI updates immediately.
