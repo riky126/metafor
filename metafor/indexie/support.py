@@ -3,6 +3,9 @@ import asyncio
 import json
 import inspect
 import urllib.parse
+import hashlib
+import time
+from typing import Any, Dict, Optional
 from js import console, Object, Promise, JSON, fetch
 from pyodide.ffi import create_proxy, to_js
 
@@ -46,6 +49,57 @@ async def _js_promise_to_future(js_promise):
 def _to_js_obj(data):
     """Helper to convert Python dict to JS Object safely."""
     return to_js(data, dict_converter=Object.fromEntries)
+
+# --- Revision Tracking Utilities ---
+
+def _generate_revision(doc: Dict[str, Any], parent_rev: Optional[str] = None) -> str:
+    """
+    Generate a generation-based revision string (CouchDB style).
+    Format: "{generation}-{hash}"
+    """
+    # Create deterministic hash from content
+    # Exclude revision and metadata fields
+    doc_copy = {k: v for k, v in doc.items() 
+                if not k.startswith('_') or k == '_id'}
+    doc_str = json.dumps(doc_copy, sort_keys=True)
+    
+    try:
+        hash_obj = hashlib.md5(doc_str.encode())
+        doc_hash = hash_obj.hexdigest()
+    except Exception:
+        # Fallback hash
+        hash_val = abs(hash(doc_str))
+        doc_hash = hex(hash_val)[2:]
+
+    # Calculate generation
+    generation = 1
+    if parent_rev:
+        try:
+            parts = parent_rev.split('-')
+            if len(parts) >= 2 and parts[0].isdigit():
+                generation = int(parts[0]) + 1
+        except Exception:
+            pass
+            
+    return f"{generation}-{doc_hash}"
+
+def _get_revision(doc: Dict[str, Any]) -> Optional[str]:
+    """Get the revision from a document, or None if not present."""
+    return doc.get("_rev")
+
+def _set_revision(doc: Dict[str, Any], rev: Optional[str] = None, parent_rev: Optional[str] = None) -> str:
+    """Set or generate a revision for a document. Returns the revision."""
+    if rev is None:
+        rev = _generate_revision(doc, parent_rev)
+    doc["_rev"] = rev
+    doc["_lastModified"] = time.time() * 1000
+    return rev
+
+def _ensure_revision(doc: Dict[str, Any]) -> str:
+    """Ensure a document has a revision. Returns the revision."""
+    if "_rev" not in doc:
+        return _set_revision(doc)
+    return doc["_rev"]
 
 # --- Sync Logic ---
 

@@ -9,7 +9,7 @@ from js import console, navigator, window
 from pyodide.ffi import create_proxy
 
 from .plugin import Table, HookRegistrar
-from .support import IndexedDBError, _to_js_obj
+from .support import IndexedDBError, _to_js_obj, _generate_revision, _get_revision, _set_revision, _ensure_revision
 
 
 # --- Conflict Resolution ---
@@ -63,44 +63,8 @@ class ConflictHistory:
 
 
 # --- Revision Tracking ---
+# Moved to support.py
 
-def _generate_revision(doc: Dict[str, Any]) -> str:
-    """Generate a revision string for a document based on its content."""
-    # Create a deterministic hash from document content
-    # Exclude revision and metadata fields
-    doc_copy = {k: v for k, v in doc.items() 
-                if not k.startswith('_') or k == '_id'}
-    doc_str = json.dumps(doc_copy, sort_keys=True)
-    # Use a simple hash (in browser/Pyodide, we can use hashlib)
-    try:
-        hash_obj = hashlib.md5(doc_str.encode())
-        return hash_obj.hexdigest()[:16]  # 16 char revision
-    except Exception:
-        # Fallback: use Python's built-in hash (works in Pyodide)
-        # Convert to positive hex string
-        hash_val = abs(hash(doc_str))
-        return hex(hash_val)[2:18] if hash_val > 0 else hex(-hash_val)[2:18]
-
-
-def _get_revision(doc: Dict[str, Any]) -> Optional[str]:
-    """Get the revision from a document, or None if not present."""
-    return doc.get("_rev")
-
-
-def _set_revision(doc: Dict[str, Any], rev: Optional[str] = None) -> str:
-    """Set or generate a revision for a document. Returns the revision."""
-    if rev is None:
-        rev = _generate_revision(doc)
-    doc["_rev"] = rev
-    doc["_lastModified"] = time.time() * 1000
-    return rev
-
-
-def _ensure_revision(doc: Dict[str, Any]) -> str:
-    """Ensure a document has a revision. Returns the revision."""
-    if "_rev" not in doc:
-        return _set_revision(doc)
-    return doc["_rev"]
 
 
 class OfflineQueue:
@@ -112,29 +76,33 @@ class OfflineQueue:
         # For now, we assume it's created via schema injection in Indexie.
         self.table = Table(self.TABLE_NAME, db, primary_key="id")
 
-    async def enqueue(self, table_name: str, op: str, key: Any, value: Any = None):
+    async def enqueue(self, table_name: str, op: str, key: Any, value: Any = None, base_rev: str = None, base_doc: dict = None):
         # Ensure value has a revision if it's a document
         if value and isinstance(value, dict) and op in ("put", "add"):
             _ensure_revision(value)
         
         # Optimization: Store Reference Only (State-Based Sync)
-        # We store metadata to allow hydration but avoid full copy
         stored_value = value
-        if op in ("put", "add") and isinstance(value, dict):
-             # User requested structure: {ref_row: table_row_id, _lastModified: ..., _rev: ...}
-             stored_value = {
-                 "ref_row": key,
-                 "_lastModified": value.get("_lastModified", time.time() * 1000),
-                 "_rev": value.get("_rev")
-             }
         
-        # Coalesce: Remove existing ops for this table+key to prevent duplicates
-        # This ensures we only sync the *latest* state for a given key.
-        all_items = await self.table.to_array()
-        for item in all_items:
-            if item.get("table") == table_name and item.get("key") == key:
-                console.log(f"OfflineQueue: Coalescing - removing prev mutation {item['id']} for {table_name}:{key}")
-                await self.table.delete(item["id"])
+        # Check for existing pending mutation for this key (Coalescing)
+        items = await self.table.to_array()
+        existing = next((i for i in items if i.get("table") == table_name and i.get("key") == key), None)
+        
+        if existing:
+            # Update existing mutation (Coalesce)
+            # We KEEP the original base_rev/base_doc (the start of the transaction)
+            # We UPDATE the value to the latest
+            existing["op"] = op
+            existing["value"] = stored_value
+            existing["timestamp"] = time.time() * 1000
+            
+            # If the original didn't have base info (e.g. was a create), and this one does?
+            # If original was create (base=None), valid.
+            # If original was update (base=X), and we update again (base=Y), we keep X!
+            
+            console.log(f"OfflineQueue: Coalesced {op} for {table_name}:{key}")
+            await self.table.put(existing)
+            return
 
         mutation = {
             "id": str(uuid.uuid4()),
@@ -142,7 +110,9 @@ class OfflineQueue:
             "op": op,
             "key": key,
             "value": stored_value,
-            "timestamp": time.time() * 1000
+            "timestamp": time.time() * 1000,
+            "base_rev": base_rev,
+            "base_doc": base_doc
         }
         console.log(f"OfflineQueue: Attempting to add mutation: {mutation}")
         await self.table.add(mutation)
@@ -338,14 +308,18 @@ class SyncManager:
             
             async def on_update(payload):
                 item = payload["item"].copy() if payload.get("item") else None
+                base_rev = payload.get("base_rev")
+                base_doc = payload.get("base_doc")
                 # Ensure revision is set when enqueueing
                 if item:
                     _ensure_revision(item)
-                await self.queue.enqueue(table_name, "put", payload["key"], item)
+                await self.queue.enqueue(table_name, "put", payload["key"], item, base_rev=base_rev, base_doc=base_doc)
                 self._trigger_push()
                 
             async def on_delete(payload):
-                await self.queue.enqueue(table_name, "delete", payload["key"])
+                base_rev = payload.get("base_rev")
+                base_doc = payload.get("base_doc")
+                await self.queue.enqueue(table_name, "delete", payload["key"], base_rev=base_rev, base_doc=base_doc)
                 self._trigger_push()
 
             table.hook.on_add(on_add)
@@ -412,6 +386,10 @@ class SyncManager:
             # We assume documents have { table, key, value, deleted: bool, _rev: str }
             # We use silent=True to avoid triggering hooks (echo prevention)
             
+            # Pre-fetch pending mutations to identify "Dirty" records
+            queue_items = await self.queue.peek(9999)
+            pending_keys = set((i.get("table"), i.get("key")) for i in queue_items)
+            
             conflicts_resolved = 0
             
             for doc in documents:
@@ -424,24 +402,25 @@ class SyncManager:
                 table = self.db.table(table_name)
                 if not table: continue
                 
+                is_dirty = (table_name, key) in pending_keys
+                
                 if deleted:
-                    # For deletes, check if local document exists and has been modified
-                    local_doc = await table.get(key)
-                    if local_doc and _get_revision(local_doc):
-                        # Conflict: local document exists but remote says delete
+                    # If local is dirty, it's a conflict. If clean, safe to delete.
+                    if is_dirty:
+                        local_doc = await table.get(key)
                         conflict = Conflict(
                             table_name=table_name,
                             key=key,
                             local_doc=local_doc,
                             remote_doc=None,  # Deleted
-                            local_rev=_get_revision(local_doc),
+                            local_rev=_get_revision(local_doc) if local_doc else None,
                             remote_rev=remote_rev or "deleted"
                         )
                         resolved = await self._resolve_conflict(conflict, table, key)
                         if resolved:
                             conflicts_resolved += 1
                     else:
-                        # No conflict, safe to delete
+                        # Fast-Forward Delete
                         await table.delete(key, silent=True)
                 else:
                     # Ensure remote document has revision
@@ -451,29 +430,24 @@ class SyncManager:
                         else:
                             val["_rev"] = remote_rev
                     
-                    # Check for conflicts with local document
-                    local_doc = await table.get(key)
-                    
-                    if local_doc:
-                        local_rev = _get_revision(local_doc)
-                        if local_rev and local_rev != remote_rev:
-                            # Conflict detected!
-                            conflict = Conflict(
-                                table_name=table_name,
-                                key=key,
-                                local_doc=local_doc,
-                                remote_doc=val,
-                                local_rev=local_rev,
-                                remote_rev=remote_rev
-                            )
-                            resolved = await self._resolve_conflict(conflict, table, key)
-                            if resolved:
-                                conflicts_resolved += 1
-                        else:
-                            # No conflict, safe to update
-                            await table.put(val, key=key, silent=True)
+                    if is_dirty:
+                        # Conflict!
+                        local_doc = await table.get(key)
+                        local_rev = _get_revision(local_doc) if local_doc else None
+                        
+                        conflict = Conflict(
+                            table_name=table_name,
+                            key=key,
+                            local_doc=local_doc,
+                            remote_doc=val,
+                            local_rev=local_rev,
+                            remote_rev=remote_rev
+                        )
+                        resolved = await self._resolve_conflict(conflict, table, key)
+                        if resolved:
+                            conflicts_resolved += 1
                     else:
-                        # New document, no conflict
+                        # Fast-Forward Update
                         await table.put(val, key=key, silent=True)
             
             if conflicts_resolved > 0:
@@ -521,13 +495,60 @@ class SyncManager:
                 console.log(f"SyncManager: Conflict resolved (remote-wins): {conflict.table_name}:{key}")
             
             elif self.conflict_strategy == self.ConflictStrategy.MERGE:
-                # Simple merge: combine fields, remote takes precedence for overlapping keys
-                if conflict.local_doc and conflict.remote_doc:
-                    resolved_doc = {**conflict.local_doc, **conflict.remote_doc}
-                    # Preserve local _rev but update timestamp
+                # 3-Way Merge: Base, Local, Remote
+                base_doc = None
+                
+                # Try to find base_doc in Offline Queue (it represents the state before local edits)
+                queue_items = await self.queue.peek(9999) # Scan queue (optimize later)
+                pending = next((i for i in queue_items if i.get("table") == conflict.table_name and i.get("key") == key), None)
+                
+                if pending and pending.get("base_doc"):
+                    base_doc = pending.get("base_doc")
+                    console.log(f"SyncManager: Found base_doc in queue for merge: rev={base_doc.get('_rev')}")
+                
+                if conflict.local_doc and conflict.remote_doc and base_doc:
+                    # Perform 3-Way Merge
+                    resolved_doc = {}
+                    all_keys = set(conflict.local_doc.keys()) | set(conflict.remote_doc.keys()) | set(base_doc.keys())
+                    
+                    for k in all_keys:
+                        if k.startswith("_"): continue # Skip metadata for logic, add back later
+                        
+                        base_val = base_doc.get(k)
+                        local_val = conflict.local_doc.get(k)
+                        remote_val = conflict.remote_doc.get(k)
+                        
+                        if local_val == remote_val:
+                            resolved_doc[k] = local_val
+                        elif local_val == base_val and remote_val != base_val:
+                            # Remote changed it, Local didn't -> Take Remote
+                            resolved_doc[k] = remote_val
+                        elif remote_val == base_val and local_val != base_val:
+                            # Local changed it, Remote didn't -> Take Local
+                            resolved_doc[k] = local_val
+                        else:
+                            # Both changed it differently -> Conflict!
+                            # For automatic merge, we often prefer Remote or Local. 
+                            # Let's prefer Remote (server authority) for collision.
+                            resolved_doc[k] = remote_val
+                            
+                    # Add back metadata from Remote (it usually wins for _rev, _lastModified)
+                    resolved_doc["_rev"] = conflict.remote_doc.get("_rev")
                     resolved_doc["_lastModified"] = time.time() * 1000
-                    _set_revision(resolved_doc)  # Generate new revision
-                    console.log(f"SyncManager: Conflict resolved (merge): {conflict.table_name}:{key}")
+                    
+                    # Generate a NEW revision for the merged result? 
+                    # Actually, if we merge, we are creating a NEW version on top of Remote.
+                    # So we should rotate.
+                    _set_revision(resolved_doc, parent_rev=resolved_doc["_rev"])
+                    
+                    console.log(f"SyncManager: 3-Way Merge successful for {conflict.table_name}:{key}")
+
+                elif conflict.local_doc and conflict.remote_doc:
+                     # Fallback to 2-way merge if no base (simple overlay)
+                    resolved_doc = {**conflict.local_doc, **conflict.remote_doc}
+                    resolved_doc["_lastModified"] = time.time() * 1000
+                    _set_revision(resolved_doc, parent_rev=conflict.remote_doc.get("_rev"))
+                    console.log(f"SyncManager: 2-Way Merge (No Base) for {conflict.table_name}:{key}")
                 elif conflict.remote_doc:
                     resolved_doc = conflict.remote_doc
                 else:

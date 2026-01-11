@@ -238,8 +238,18 @@ class Table:
              res = self._overlay.put(item, key)
              return res
         
+        # Capture base_rev for Revision Tree
+        old_item = await self.get(pk_val) if pk_val is not None else None
+        
+        base_rev = old_item.get("_rev") if old_item else None
+        
+        # --- Revision Rotation (Only for local writes) ---
+        if not silent:
+            from .support import _set_revision
+            _set_revision(item, parent_rev=base_rev)
+
         if self.strategy == Strategy.NETWORK_FIRST and not silent:
-            await self._trigger_hook("on_update", {"item": item, "key": pk_val})
+            await self._trigger_hook("on_update", {"item": item, "key": pk_val, "base_rev": base_rev, "base_doc": old_item})
             
             res = await self.db.query_engine.put(self.name, item, key)
             self._set_version(self._version.peek() + 1)
@@ -248,7 +258,7 @@ class Table:
             res = await self.db.query_engine.put(self.name, item, key)
             self._set_version(self._version.peek() + 1)
             if not silent:
-                await self._trigger_hook("on_update", {"item": item, "key": pk_val})
+                await self._trigger_hook("on_update", {"item": item, "key": pk_val, "base_rev": base_rev, "base_doc": old_item})
             return res
         
     def get(self, key: Any):
@@ -270,8 +280,12 @@ class Table:
              self._overlay.delete(key)
              return
              
+        # Capture base_rev for Tombstone
+        old_item = await self.get(key) if key is not None else None
+        base_rev = old_item.get("_rev") if old_item else None
+
         if self.strategy == Strategy.NETWORK_FIRST and not silent:
-             await self._trigger_hook("on_delete", {"key": key, "all": False})
+             await self._trigger_hook("on_delete", {"key": key, "all": False, "base_rev": base_rev, "base_doc": old_item})
              
              res = await self.db.query_engine.delete(self.name, key)
              self._set_version(self._version.peek() + 1)
@@ -280,7 +294,7 @@ class Table:
             res = await self.db.query_engine.delete(self.name, key)
             self._set_version(self._version.peek() + 1)
             if not silent:
-                await self._trigger_hook("on_delete", {"key": key, "all": False})
+                await self._trigger_hook("on_delete", {"key": key, "all": False, "base_rev": base_rev, "base_doc": old_item})
             return res
         
     async def clear(self, silent: bool = False):

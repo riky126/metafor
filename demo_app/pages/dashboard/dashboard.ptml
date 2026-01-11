@@ -40,7 +40,7 @@
     }, deep=True)
    
     # These updates will now trigger the effect without changing references
-    def update_person(e):
+    def update_person_dict(e):
         print("Updating person...")
         def update():
             user_data()["name"] = "Bob"
@@ -120,6 +120,7 @@
 
     async def do_update():
         await db.users.put({"name": 'John Doe', "email": 'john@mail.com', "id": 4})
+        await db.users.update(4, {"name": 'John Doe', "email": 'john@mail.com'})
 
     def update_person(e):
         asyncio.create_task(do_update())
@@ -128,7 +129,7 @@
 
 @ptml {
     <div className="home">
-        <div className=@{lambda: f'theme-{theme()}'} onclick=@{update_person} >
+        <div className=@{lambda: f'theme-{theme()}'} onclick=@{update_person_dict} >
             <h2>Dashboard Page</h2>
             <p>Welcome to the home page!</p>
 
