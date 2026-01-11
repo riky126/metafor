@@ -44,34 +44,7 @@ class HookRegistrar:
                     await res
 
 
-class DirectTransaction:
-    """
-    Transaction handler for offline direct-write mode.
-    
-    In this mode, there is no in-memory buffer. Operations (add/put/delete) are
-    executed immediately against the underlying database to ensure they are
-    captured by the Sync Queue hooks as soon as possible.
-    
-    Therefore, 'commit' is a no-op because the data is already persisted.
-    """
-    def __init__(self, table):
-        self.table = table
 
-    async def add(self, item: Dict[str, Any], key: Any = None):
-        return await self.table.add(item, key)
-
-    async def put(self, item: Dict[str, Any], key: Any = None):
-        return await self.table.put(item, key)
-
-    async def delete(self, key: Any):
-        return await self.table.delete(key)
-
-    async def commit(self):
-        # Auto-commit: Operations were already executed directly on the DB.
-        pass
-
-    async def rollback(self):
-        console.warn("Rollback is not supported in offline direct-write mode (operations are auto-committed).")
 
 class OverlayLayer:
     """In-memory layer for optimistic transactions."""
@@ -128,7 +101,8 @@ class OverlayLayer:
                      val = op["value"].copy()
                      if is_temp_key and self.table.primary_key in val:
                          del val[self.table.primary_key]
-                     await self.table.add(val, silent=False, optimistic=self.visible)
+                     # Use silent=True because hooks were already triggered during the overlay phase
+                     await self.table.add(val, silent=True)
 
                  elif op["type"] == "put":
                      is_temp_key = isinstance(key, int) and key < 0
@@ -137,12 +111,12 @@ class OverlayLayer:
                          val = op["value"].copy()
                          if self.table.primary_key in val:
                              del val[self.table.primary_key]
-                         await self.table.put(val, silent=False, optimistic=self.visible)
+                         await self.table.put(val, silent=True)
                      else:
-                         await self.table.put(op["value"], key=key, silent=False, optimistic=self.visible)
+                         await self.table.put(op["value"], key=key, silent=True)
                          
                  elif op["type"] == "delete":
-                     await self.table.delete(key, silent=False, optimistic=self.visible)
+                     await self.table.delete(key, silent=True)
              
              self.mutations.clear()
         except Exception as e:
@@ -171,27 +145,22 @@ class Table:
         
     @contextlib.asynccontextmanager
     async def start_transaction(self, optimistic: bool = False):
-        # Check Network Status
-        if self.db.sync_manager:
-            is_online = self.db.sync_manager.is_online
-        else:
-            is_online = navigator.onLine
-        
-        if not is_online:
-            # Offline: Write directly to DB (triggering hooks for Sync Queue)
-            yield DirectTransaction(self)
-        else:
-            # Online: Use Optimistic Overlay (suppressing hooks to avoid Sync Queue)
-            self._overlay.active = True
-            self._overlay.visible = optimistic
-            try:
-                yield self._overlay
-            except Exception:
-                 await self._overlay.rollback()
-                 raise
-            finally:
-                 if self._overlay.active:
-                      await self._overlay.rollback()
+        """
+        Starts a managed transaction. 
+        Highly Recommended for Optimistic UI and guaranteed Atomic Commits.
+        """
+        self._overlay.active = True
+        self._overlay.visible = optimistic
+        try:
+            yield self._overlay
+        except Exception:
+             await self._overlay.rollback()
+             raise
+        finally:
+             # If the transaction block finishes without an explicit commit(),
+             # it will be automatically rolled back to prevent stale memory state.
+             if self._overlay.active:
+                  await self._overlay.rollback()
         
     def attach_schema(self, schema: Schema):
         """Attaches a validation schema to the table."""
@@ -218,6 +187,9 @@ class Table:
         # Overlay
         if self._overlay.active:
              res = self._overlay.add(item, key)
+             if not silent and self._overlay.visible:
+                  # Trigger hook immediately for Optimistic Sync/Manual Control
+                  await self._trigger_hook("on_add", {"item": item, "key": res, "optimistic": True})
              return res
 
         res = await self.db.query_engine.add(self.name, item, key)
@@ -235,6 +207,17 @@ class Table:
         # 1. Overlay
         if self._overlay.active:
              res = self._overlay.put(item, key)
+             if not silent and self._overlay.visible:
+                  # For optimistic manual sync, we need to provide base_rev to SyncManager refinement
+                  old_item = await self.get(pk_val) if pk_val is not None else None
+                  base_rev = old_item.get("_rev") if old_item else None
+                  await self._trigger_hook("on_update", {
+                      "item": item, 
+                      "key": res, 
+                      "base_rev": base_rev, 
+                      "base_doc": old_item,
+                      "optimistic": True
+                  })
              return res
         
         # Capture base_rev for Revision Tree
@@ -278,7 +261,19 @@ class Table:
         
     async def delete(self, key: Any, silent: bool = False, optimistic: bool = False):
         if self._overlay.active:
+             # Capture base_rev before overlay potentially masks/hides it
+             old_item = await self.get(key) if key is not None else None
+             base_rev = old_item.get("_rev") if old_item else None
+             
              self._overlay.delete(key)
+             if not silent and self._overlay.visible:
+                  await self._trigger_hook("on_delete", {
+                      "key": key, 
+                      "all": False, 
+                      "base_rev": base_rev, 
+                      "base_doc": old_item,
+                      "optimistic": True
+                  })
              return
              
         # Capture base_rev for Tombstone

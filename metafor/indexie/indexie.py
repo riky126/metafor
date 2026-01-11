@@ -96,7 +96,9 @@ class Indexie:
             return self._tables[name]
         
         if self._db_instance and self._db_instance.objectStoreNames.contains(name):
-             return Table(name, self)
+             table = Table(name, self)
+             self._tables[name] = table
+             return table
 
         raise AttributeError(f"'Indexie' object has no attribute '{name}'")
         
