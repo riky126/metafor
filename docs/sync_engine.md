@@ -62,6 +62,13 @@ Any `add`, `put`, or `delete` operation performed on a table is transparently ca
 -   **Push**: The `SyncManager` watches the queue and automatically sends batches of mutations to the configured upstream URL via `POST /push` when the devise is online.
 -   **Pull**: By default, it periodically polls `GET /pull` to fetch downstream changes and applies them to the local database.
 
+### 3. Conflict Resolution
+The sync engine includes built-in conflict detection and resolution strategies:
+-   **Revision Tracking**: Documents automatically get `_rev` (revision) and `_lastModified` fields
+-   **Conflict Detection**: Conflicts are detected when local and remote documents have different revisions
+-   **Resolution Strategies**: Multiple strategies available (last-write-wins, local-wins, remote-wins, merge, custom)
+-   **Conflict History**: All conflicts are recorded in `_sys_conflict_history` for inspection
+
 ## Configuration
 
 To enable sync, configure it before opening the database.
@@ -69,10 +76,72 @@ To enable sync, configure it before opening the database.
 ```python
 db = Indexie("MyApp")
 
-# Standard Configuration
+# Standard Configuration (last-write-wins conflict resolution)
 db.enable_sync("https://api.example.com/sync")
 
 await db.open()
+```
+
+### Conflict Resolution
+
+The sync engine supports multiple conflict resolution strategies:
+
+```python
+# 1. Last Write Wins (default)
+# Uses document with latest _lastModified timestamp
+db.enable_sync("https://api.example.com/sync", conflict_strategy="last_write_wins")
+
+# 2. Local Wins
+# Always keep the local version
+db.enable_sync("https://api.example.com/sync", conflict_strategy="local_wins")
+
+# 3. Remote Wins
+# Always accept the remote version
+db.enable_sync("https://api.example.com/sync", conflict_strategy="remote_wins")
+
+# 4. Merge
+# Combine both documents (remote takes precedence for overlapping keys)
+db.enable_sync("https://api.example.com/sync", conflict_strategy="merge")
+
+# 5. Custom Handler
+async def my_conflict_handler(conflict):
+    """
+    Custom conflict resolution function.
+    
+    Args:
+        conflict: Conflict object with:
+            - table_name: str
+            - key: Any
+            - local_doc: Dict (local version)
+            - remote_doc: Dict (remote version)
+            - local_rev: str (local revision)
+            - remote_rev: str (remote revision)
+    
+    Returns:
+        Dict: The resolved document to use
+    """
+    # Example: Merge with custom logic
+    resolved = {**conflict.local_doc, **conflict.remote_doc}
+    # Your custom logic here...
+    return resolved
+
+db.enable_sync(
+    "https://api.example.com/sync",
+    conflict_strategy="custom",
+    conflict_handler=my_conflict_handler
+)
+```
+
+### Inspecting Conflicts
+
+All conflicts are automatically recorded in the `_sys_conflict_history` table:
+
+```python
+# Get all conflicts
+conflicts = await db.sync_manager.conflict_history.get_all()
+
+# Clear conflict history
+await db.sync_manager.conflict_history.clear()
 ```
 
 ### Integration with ElectricSQL / Replicache

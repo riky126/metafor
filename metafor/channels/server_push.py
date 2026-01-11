@@ -26,14 +26,23 @@ class ServerPush:
     Provides a Pythonic API for receiving server-pushed updates.
     """
     
-    def __init__(self, url: str):
+    def __init__(self, url: str, max_retries: int = -1, base_delay: float = 1.0, max_delay: float = 30.0):
         """
         Initialize a ServerPush connection.
         
         Args:
             url: The URL to connect to.
+            max_retries: Max retry attempts (-1 for infinite).
+            base_delay: Initial retry delay in seconds.
+            max_delay: Maximum retry delay in seconds.
         """
         self.url = url
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.max_delay = max_delay
+        
+        self._retry_count = 0
+        self._retry_task = None
         
         # Reactive state signals
         self.state_signal, self.set_state = create_signal(ServerPushState.CLOSED)
@@ -66,7 +75,7 @@ class ServerPush:
             return
 
         if self._es:
-            self.close()
+            self.close(reset_retries=False)
             
         try:
             self.set_state(ServerPushState.CONNECTING)
@@ -78,7 +87,44 @@ class ServerPush:
             
         except Exception as e:
             self.set_state(ServerPushState.CLOSED)
-            raise ChannelConnectionError(f"Failed to connect ServerPush: {e}") from e
+            # If immediate failure, schedule retry
+            self._schedule_reconnect()
+            # raise ChannelConnectionError(f"Failed to connect ServerPush: {e}") from e
+
+    def _schedule_reconnect(self):
+        if self.state == ServerPushState.OPEN: return
+        if self.max_retries != -1 and self._retry_count >= self.max_retries:
+            console.error(f"ServerPush: Max retries ({self.max_retries}) reached. Giving up.")
+            return
+
+        # Calculate delay (Exponential backoff with jitter?)
+        # Simple for now: base * 2^retries
+        delay = min(self.base_delay * (2 ** self._retry_count), self.max_delay)
+        
+        console.log(f"ServerPush: Reconnecting in {delay}s (Attempt {self._retry_count + 1})")
+        
+        async def _reconnect_task():
+            await asyncio.sleep(delay)
+            self._retry_count += 1
+            try:
+                self.connect()
+            except Exception as e:
+                console.error(f"Reconnect attempt failed: {e}")
+                # Recursion handles next retry if connect() fails and calls schedule_reconnect
+        
+        if self._retry_task:
+            self._retry_task.cancel()
+        
+        # We need a proper loop to schedule this on
+        try:
+             loop = asyncio.get_event_loop()
+             if loop.is_running():
+                 self._retry_task = loop.create_task(_reconnect_task())
+             else:
+                 # Fallback? usually strictly async env
+                 pass
+        except:
+             pass
 
     def _setup_event_handlers(self):
         if not self._es: return
@@ -86,6 +132,10 @@ class ServerPush:
         def on_open(event):
             self.set_state(ServerPushState.OPEN)
             self.set_ready_state(self._es.readyState)
+            
+            # Reset retries on success
+            self._retry_count = 0
+            
             for handler in self._on_open_handlers:
                 try: 
                     handler(event)
@@ -125,9 +175,21 @@ class ServerPush:
                 console.error(f"Error processing ServerPush message: {e}")
 
         def on_error(event):
-            # EventSource attempts reconnect automatically, but we should notify.
-            # State might flicker to CONNECTING.
-            # self.set_state(ServerPushState.CONNECTING) # Maybe?
+            # EventSource attempts reconnect automatically for some errors (network), 
+            # but usually NOT for 4xx/5xx or CORS, which close it immediately.
+            
+            # Check state
+            ready_state = self._es.readyState
+            self.set_ready_state(ready_state)
+            
+            if ready_state == ES_CLOSED:
+                self.set_state(ServerPushState.CLOSED)
+                console.warn(f"ServerPush Error (CLOSED): Scheduling reconnect...")
+                self._schedule_reconnect()
+            elif ready_state == ES_CONNECTING:
+                self.set_state(ServerPushState.CONNECTING)
+                # Browser is handling retry, but we might want to count it?
+                # For now let browser handle the short-term retries
             
             for handler in self._on_error_handlers:
                 try:
@@ -145,8 +207,16 @@ class ServerPush:
         self._es.addEventListener('message', self._js_handlers['message'])
         self._es.addEventListener('error', self._js_handlers['error'])
 
-    def close(self):
+    def close(self, reset_retries: bool = True):
         """Close the connection."""
+        # Cancel pending retry
+        if self._retry_task:
+            self._retry_task.cancel()
+            self._retry_task = None
+            
+        if reset_retries:
+            self._retry_count = 0
+            
         if not self._es: return
         
         self.set_state(ServerPushState.CLOSED)

@@ -102,6 +102,7 @@
             http_client=http_client
         )
 
+
     # Create an effect that will track changes
     def user_auth_effect():
         print(f"User Auth changed...")

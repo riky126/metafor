@@ -27,14 +27,41 @@ class Indexie:
         self.query_engine = QueryEngine(self)
         self.sync_manager = None
         
-    def enable_sync(self, upstream_url: str, pull_enabled: bool = True):
-        from .sync import SyncManager, OfflineQueue, ReplicationState
-        self.sync_manager = SyncManager(self, upstream_url, pull_enabled=pull_enabled)
+    def enable_sync(self, upstream_url: str, pull_enabled: bool = True, 
+                    conflict_handler: Optional[Callable] = None,
+                    conflict_strategy: str = "last_write_wins"):
+        """
+        Enable synchronization with conflict resolution.
+        
+        Args:
+            upstream_url: Backend sync endpoint URL
+            pull_enabled: Whether to enable pull replication (default: True)
+            conflict_handler: Custom conflict resolution function (optional)
+            conflict_strategy: Conflict resolution strategy. Options:
+                - "last_write_wins" (default): Use document with latest timestamp
+                - "local_wins": Always keep local version
+                - "remote_wins": Always accept remote version
+                - "merge": Merge both documents (remote takes precedence)
+                - "custom": Use conflict_handler function
+        """
+        from .sync import SyncManager, OfflineQueue, ReplicationState, ConflictHistory
+        self.sync_manager = SyncManager(
+            self, 
+            upstream_url, 
+            pull_enabled=pull_enabled,
+            conflict_handler=conflict_handler,
+            conflict_strategy=conflict_strategy
+        )
         
         # Register system tables so they are accessible via db.table(...) if needed, 
         # and so hooks don't try to attach to them (SyncManager handles exclusion but good to have them tracked)
         self._tables[OfflineQueue.TABLE_NAME] = self.sync_manager.queue.table
         self._tables[ReplicationState.TABLE_NAME] = self.sync_manager.state.table
+        self._tables[ConflictHistory.TABLE_NAME] = self.sync_manager.conflict_history.table
+        
+        if self._is_open:
+             self.sync_manager.start()
+             
         return self
 
     def version(self, v: int) -> Version:
@@ -156,6 +183,8 @@ class Indexie:
         return await future
 
     def _ensure_sync_tables(self, db, txn):
+        from .sync import ConflictHistory
+        
         # Create _sys_sync_queue (id, timestamp index)
         if not db.objectStoreNames.contains("_sys_sync_queue"):
             console.log("Indexie: Creating _sys_sync_queue")
@@ -165,6 +194,12 @@ class Indexie:
         if not db.objectStoreNames.contains("_sys_sync_state"):
             console.log("Indexie: Creating _sys_sync_state")
             store = db.createObjectStore("_sys_sync_state", _to_js_obj({"keyPath": "id"}))
+
+        if not db.objectStoreNames.contains(ConflictHistory.TABLE_NAME):
+            console.log(f"Indexie: Creating {ConflictHistory.TABLE_NAME}")
+            store = db.createObjectStore(ConflictHistory.TABLE_NAME, _to_js_obj({"keyPath": "id"}))
+            store.createIndex("timestamp", "timestamp", _to_js_obj({"unique": False}))
+            store.createIndex("table", "table", _to_js_obj({"unique": False}))
 
     def _apply_schema(self, db, txn, schema):
         for table_name, schema_str in schema.items():
