@@ -62,12 +62,32 @@ Any `add`, `put`, or `delete` operation performed on a table is transparently ca
 -   **Push**: The `SyncManager` watches the queue and automatically sends batches of mutations to the configured upstream URL via `POST /push` when the devise is online.
 -   **Pull**: By default, it periodically polls `GET /pull` to fetch downstream changes and applies them to the local database.
 
-### 3. Conflict Resolution
-The sync engine includes built-in conflict detection and resolution strategies:
--   **Revision Tracking**: Documents automatically get `_rev` (revision) and `_lastModified` fields
--   **Conflict Detection**: Conflicts are detected when local and remote documents have different revisions
--   **Resolution Strategies**: Multiple strategies available (last-write-wins, local-wins, remote-wins, merge, custom)
--   **Conflict History**: All conflicts are recorded in `_sys_conflict_history` for inspection
+### 3. Revision Trees (Conflict-Free Tree System)
+The sync engine implements a **Revision Tree Architecture** (similar to CouchDB/RxDB) to ensure data consistency without locking.
+-   **Structure**: Data is stored as a tree of revisions. Each update creates a new child node (e.g., `1-abc` -> `2-xyz`).
+-   **Generation-Based**: Revisions use an `N-hash` format (`Generation-Hash`) to track ancestry depth explicitly.
+-   **Automatic Rotation**: Every local update automatically increments the revision generation, creating a traceable history.
+-   **Conflict Handling**: Divergent branches (e.g., Local `2-xyz` vs Remote `2-def`) differ in hash but share ancestry, allowing automated 3-way merging.
+
+### Revision Tree Visualization
+
+```mermaid
+graph TD
+    root((Base: 1-abc))
+    
+    subgraph "Local Device (Offline)"
+        root --> local[2-xyz: 'Title: New']
+    end
+    
+    subgraph "Server (Remote)"
+        root --> remote[2-def: 'Status: Done']
+    end
+    
+    local -.->|Sync Push| merge{3-Way Merge}
+    remote -.->|Sync Pull| merge
+    
+    merge --> result[3-merged: 'Title: New, Status: Done']
+```
 
 ## Configuration
 
@@ -82,9 +102,9 @@ db.enable_sync("https://api.example.com/sync")
 await db.open()
 ```
 
-### Conflict Resolution
+### Sync Flow Logic
 
-When a new document payload is received from the server (Pull), the Sync Engine performs the following checks:
+When a new document payload is received from the server (Pull), the Sync Engine performs the following checks to maintain the Revision Tree:
 
 ```mermaid
 graph TD
@@ -123,7 +143,7 @@ graph TD
     db.enable_sync(url, conflict_strategy=SyncManager.ConflictStrategy.REMOTE_WINS)
     ```
 
-4.  **Merge**: Combines fields from both documents. Remote fields take precedence for overlapping keys.
+4.  **Merge (3-Way)**: Uses the **Revision Tree** to find the common ancestor (**Base Document**, retrieved from the Offline Queue). It intelligently combines non-conflicting changes from both Local and Remote branches.
     ```python
     db.enable_sync(url, conflict_strategy=SyncManager.ConflictStrategy.MERGE)
     ```
@@ -184,23 +204,43 @@ The `start_transaction(optimistic=True)` context manager is network-aware, provi
 ### Online Behavior
 -   **Mode**: Optimistic UI.
 -   **Mechanism**: Writes are applied to an in-memory **Overlay**. The UI updates immediately.
--   **Sync**: These writes are **NOT** queued for sync. It is assumed that your code will make an API call to the backend immediately after the optimistic update.
--   **Outcome**: Instant feedback, no double-writes to queue.
-
-### Offline Behavior
--   **Mode**: Direct Write / Queue.
--   **Mechanism**: Writes bypass the overlay and go **DIRECTLY** to IndexedDB.
--   **Sync**: These writes **TRIGGER** hooks and are added to the **Offline Queue**.
--   **Outcome**: Data is safely stored locally and will be synced automatically when the device goes back online.
+-   **Sync**: When the transaction commits, writes are persisted to IndexedDB and **automatically queued** for background sync.
+-   **Outcome**: Instant UI feedback + Robust data synchronization. No manual API calls needed.
 
 ### Usage Example
 
 ```python
 async with db.todos.start_transaction(optimistic=True):
-    # This single block handles both scenarios!
+    # UI updates instantly!
+    # Data is saved to DB and synced in background automatically.
     await db.todos.add(new_todo)
-    
-    # If we are online, we should also tell the server
-    if db.sync_manager.is_online:
-         await api_client.create_todo(new_todo)
 ```
+
+## Server-Side Requirements
+
+To fully support the **Revision Tree** and **Conflict Resolution**, your backend database **MUST** store and handle specific metadata fields. You cannot simply discard them.
+
+### Required Columns
+Your server tables (e.g., Postgres/MySQL) need these columns:
+
+| Column | Type | Purpose |
+| :--- | :--- | :--- |
+| `_rev` | `VARCHAR` | Stores the current revision ID (e.g., `1-abc...`). Used to detect if an incoming PUSH is based on the current version or an old one. |
+| `_lastModified` | `BIGINT` | Unix timestamp (ms) of the last update. The "Tie-Breaker" for Last-Write-Wins. |
+| `_deleted` | `BOOLEAN` | (Optional but recommended) Stores "Soft Deletes" (Tombstones) so they can be synced to clients. |
+
+### Server Logic (Push Handler)
+When receiving a **PUSH** from a client:
+1.  **Check Revision**: Compare incoming `_rev` with stored `_rev`.
+    *   If they match (or incoming is child of stored), **ACCEPT**.
+    *   If they diverge, **CHECK TIMESTAMPS**.
+2.  **Last-Write-Wins**:
+    *   If `Incoming._lastModified > Stored._lastModified`: **OVERWRITE**.
+    *   If `Incoming._lastModified < Stored._lastModified`: **REJECT** (Server Wins).
+
+### Server Logic (Pull Handler)
+When sending a **PULL** response:
+1.  Include `_rev` and `_lastModified` in every document object.
+2.  For deletions, send a **Tombstone** object containing `_rev`, `_lastModified`, and `_deleted: true`.
+
+**Warning**: If your server does not store these fields, clients will constantly treat server data as "New/Conflicting" or "Old", leading to infinite sync loops or data loss.

@@ -86,7 +86,7 @@ class OverlayLayer:
                 key = -random.randint(1, 1000000)
                 item[self.table.primary_key] = key
         
-        self.mutations[key] = {"type": "put", "value": item}
+        self.mutations[key] = {"type": "add", "value": item}
         # Only trigger reactivity version update, NOT hooks (to avoid Sync Queue)
         if self.visible:
              self.table._set_version(self.table._version.peek() + 1)
@@ -119,19 +119,26 @@ class OverlayLayer:
              keys = list(self.mutations.keys())
              for key in keys:
                  op = self.mutations[key]
-                 if op["type"] == "put":
+                 if op["type"] == "add":
+                     is_temp_key = isinstance(key, int) and key < 0
+                     val = op["value"].copy()
+                     if is_temp_key and self.table.primary_key in val:
+                         del val[self.table.primary_key]
+                     await self.table.add(val, silent=False, optimistic=self.visible)
+
+                 elif op["type"] == "put":
                      is_temp_key = isinstance(key, int) and key < 0
                      
                      if is_temp_key and self.table.primary_key:
                          val = op["value"].copy()
                          if self.table.primary_key in val:
                              del val[self.table.primary_key]
-                         await self.table.put(val, silent=True)
+                         await self.table.put(val, silent=False, optimistic=self.visible)
                      else:
-                         await self.table.put(op["value"], key=key, silent=True)
+                         await self.table.put(op["value"], key=key, silent=False, optimistic=self.visible)
                          
                  elif op["type"] == "delete":
-                     await self.table.delete(key, silent=True)
+                     await self.table.delete(key, silent=False, optimistic=self.visible)
              
              self.mutations.clear()
         except Exception as e:
@@ -200,34 +207,22 @@ class Table:
     async def _trigger_hook(self, event: str, payload: Any):
         await self._hook_registrar._trigger(event, payload)
         
-    async def add(self, item: Dict[str, Any], key: Any = None, silent: bool = False):
+    async def add(self, item: Dict[str, Any], key: Any = None, silent: bool = False, optimistic: bool = False):
         # Validate before any operation
         self._validate_item(item)
-
-        # 1. Overlay
+        
+        # Overlay
         if self._overlay.active:
              res = self._overlay.add(item, key)
-             # Hooks removed here for Overlay path
              return res
 
-        # Key injection handling is now done in QueryEngine, but we pass what we have.
-        # If inline key expected but missing in item, we let query engine handle it if store.keyPath exists.
-        # We just pass item and key.
-
-        if self.strategy == Strategy.NETWORK_FIRST and not silent:
-            await self._trigger_hook("on_add", {"item": item, "key": key})
-            
-            res = await self.db.query_engine.add(self.name, item, key)
-            self._set_version(self._version.peek() + 1)
-            return res
-        else:
-            res = await self.db.query_engine.add(self.name, item, key)
-            self._set_version(self._version.peek() + 1)
-            if not silent:
-                await self._trigger_hook("on_add", {"item": item, "key": res})
-            return res
+        res = await self.db.query_engine.add(self.name, item, key)
+        self._set_version(self._version.peek() + 1)
+        if not silent:
+             await self._trigger_hook("on_add", {"item": item, "key": res, "optimistic": optimistic})
+        return res
         
-    async def put(self, item: Dict[str, Any], key: Any = None, silent: bool = False):
+    async def put(self, item: Dict[str, Any], key: Any = None, silent: bool = False, optimistic: bool = False):
         # Validate before any operation
         self._validate_item(item)
 
@@ -249,7 +244,8 @@ class Table:
             _set_revision(item, parent_rev=base_rev)
 
         if self.strategy == Strategy.NETWORK_FIRST and not silent:
-            await self._trigger_hook("on_update", {"item": item, "key": pk_val, "base_rev": base_rev, "base_doc": old_item})
+            # For Network First, we trigger before IDB call
+            await self._trigger_hook("on_update", {"item": item, "key": pk_val, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
             
             res = await self.db.query_engine.put(self.name, item, key)
             self._set_version(self._version.peek() + 1)
@@ -258,7 +254,8 @@ class Table:
             res = await self.db.query_engine.put(self.name, item, key)
             self._set_version(self._version.peek() + 1)
             if not silent:
-                await self._trigger_hook("on_update", {"item": item, "key": pk_val, "base_rev": base_rev, "base_doc": old_item})
+                # IMPORTANT: Use 'res' here because pk_val might be None for new records (auto-increment)
+                await self._trigger_hook("on_update", {"item": item, "key": res, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
             return res
         
     def get(self, key: Any):
@@ -275,7 +272,7 @@ class Table:
             return await self.db.query_engine.get(self.name, key)
         return _run()
         
-    async def delete(self, key: Any, silent: bool = False):
+    async def delete(self, key: Any, silent: bool = False, optimistic: bool = False):
         if self._overlay.active:
              self._overlay.delete(key)
              return
@@ -285,7 +282,7 @@ class Table:
         base_rev = old_item.get("_rev") if old_item else None
 
         if self.strategy == Strategy.NETWORK_FIRST and not silent:
-             await self._trigger_hook("on_delete", {"key": key, "all": False, "base_rev": base_rev, "base_doc": old_item})
+             await self._trigger_hook("on_delete", {"key": key, "all": False, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
              
              res = await self.db.query_engine.delete(self.name, key)
              self._set_version(self._version.peek() + 1)
@@ -294,12 +291,14 @@ class Table:
             res = await self.db.query_engine.delete(self.name, key)
             self._set_version(self._version.peek() + 1)
             if not silent:
-                await self._trigger_hook("on_delete", {"key": key, "all": False, "base_rev": base_rev, "base_doc": old_item})
+                await self._trigger_hook("on_delete", {"key": key, "all": False, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
             return res
         
-    async def clear(self, silent: bool = False):
+    async def clear(self, silent: bool = False, optimistic: bool = False):
          res = await self.db.query_engine.clear(self.name)
          self._set_version(self._version.peek() + 1)
+         if not silent:
+             await self._trigger_hook("on_delete", {"key": None, "all": True, "optimistic": optimistic})
          return res
 
     def drop(self):
@@ -307,7 +306,7 @@ class Table:
              raise IndexedDBError("Database instance not available for drop()")
         self.db._db_instance.deleteObjectStore(self.name)
 
-    async def update(self, key: Any, changes: Union[Dict[str, Any], Callable[[Dict[str, Any]], None]], silent: bool = False):
+    async def update(self, key: Any, changes: Union[Dict[str, Any], Callable[[Dict[str, Any]], None]], silent: bool = False, optimistic: bool = False):
         obj = await self.get(key)
         
         if obj is None:
@@ -322,7 +321,7 @@ class Table:
             else:
                 obj.update(changes)
         
-        await self.put(obj, silent=silent) 
+        await self.put(obj, silent=silent, optimistic=optimistic) 
         return True
 
     async def sync_electric(self, url: str, params: Dict[str, Any] = None, headers: Dict[str, str] = None, http_client = None):

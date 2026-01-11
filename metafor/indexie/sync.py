@@ -70,8 +70,9 @@ class ConflictHistory:
 class OfflineQueue:
     TABLE_NAME = "_sys_sync_queue"
 
-    def __init__(self, db):
+    def __init__(self, db, sync_manager: 'SyncManager' = None):
         self.db = db
+        self.sync_manager = sync_manager
         # We need to ensure the table exists. 
         # For now, we assume it's created via schema injection in Indexie.
         self.table = Table(self.TABLE_NAME, db, primary_key="id")
@@ -83,10 +84,16 @@ class OfflineQueue:
         
         # Optimization: Store Reference Only (State-Based Sync)
         stored_value = value
+        if op in ("put", "add") and isinstance(value, dict):
+             # Store reference to avoid duplication and ensure latest state is pushed
+             stored_value = {
+                 "ref_row": key
+             }
         
         # Check for existing pending mutation for this key (Coalescing)
+        # Note: We look for the record ID inside value.ref_row since top-level 'key' is removed.
         items = await self.table.to_array()
-        existing = next((i for i in items if i.get("table") == table_name and i.get("key") == key), None)
+        existing = next((i for i in items if i.get("table") == table_name and i.get("value", {}).get("ref_row") == key), None)
         
         if existing:
             # Update existing mutation (Coalesce)
@@ -102,13 +109,17 @@ class OfflineQueue:
             
             console.log(f"OfflineQueue: Coalesced {op} for {table_name}:{key}")
             await self.table.put(existing)
+            
+            # Trigger SyncManager global hooks
+            if self.sync_manager:
+                hook_name = "on_add" if op == "add" else "on_update" if op == "put" else "on_delete"
+                await self.sync_manager.hook._trigger(hook_name, existing)
             return
 
         mutation = {
             "id": str(uuid.uuid4()),
             "table": table_name,
             "op": op,
-            "key": key,
             "value": stored_value,
             "timestamp": time.time() * 1000,
             "base_rev": base_rev,
@@ -117,6 +128,11 @@ class OfflineQueue:
         console.log(f"OfflineQueue: Attempting to add mutation: {mutation}")
         await self.table.add(mutation)
         console.log(f"OfflineQueue: Enqueued {op} for {table_name}:{key}")
+        
+        # Trigger SyncManager global hooks
+        if self.sync_manager:
+            hook_name = "on_add" if op == "add" else "on_update" if op == "put" else "on_delete"
+            await self.sync_manager.hook._trigger(hook_name, mutation)
 
     async def peek(self, limit=50) -> List[Dict[str, Any]]:
         # Order by timestamp. 
@@ -173,7 +189,8 @@ class SyncManager:
         self.push_path = push_path
         self.pull_path = pull_path
         
-        self.queue = OfflineQueue(db)
+        self.hook = HookRegistrar()
+        self.queue = OfflineQueue(db, sync_manager=self)
         self.state = ReplicationState(db)
         self.conflict_history = ConflictHistory(db)
         
@@ -294,39 +311,74 @@ class SyncManager:
         for name, table in self.db._tables.items():
             if name in sys_tables: continue
             
-            # Capture closure variables
-            table_name = name 
-            
-            # Add Hook
-            async def on_add(payload):
-                item = payload["item"].copy() if payload.get("item") else None
-                # Ensure revision is set when enqueueing
-                if item:
-                    _ensure_revision(item)
-                await self.queue.enqueue(table_name, "put", payload["key"], item)
-                self._trigger_push()
-            
-            async def on_update(payload):
-                item = payload["item"].copy() if payload.get("item") else None
-                base_rev = payload.get("base_rev")
-                base_doc = payload.get("base_doc")
-                # Ensure revision is set when enqueueing
-                if item:
-                    _ensure_revision(item)
-                await self.queue.enqueue(table_name, "put", payload["key"], item, base_rev=base_rev, base_doc=base_doc)
-                self._trigger_push()
-                
-            async def on_delete(payload):
-                base_rev = payload.get("base_rev")
-                base_doc = payload.get("base_doc")
-                await self.queue.enqueue(table_name, "delete", payload["key"], base_rev=base_rev, base_doc=base_doc)
-                self._trigger_push()
+            self._attach_table_hooks(name, table)
 
-            table.hook.on_add(on_add)
-            table.hook.on_update(on_update)
-            table.hook.on_delete(on_delete)
+    def _attach_table_hooks(self, table_name, table):
+        """Helper to capture table_name in closure correctly."""
+        
+        async def on_add(payload):
+            await self._handle_hook_event(table_name, "add", payload)
+        
+        async def on_update(payload):
+            await self._handle_hook_event(table_name, "update", payload)
             
-            console.log(f"SyncManager: Attached hooks to {table_name}")
+        async def on_delete(payload):
+            await self._handle_hook_event(table_name, "delete", payload)
+
+        table.hook.on_add(on_add)
+        table.hook.on_update(on_update)
+        table.hook.on_delete(on_delete)
+        
+        console.log(f"SyncManager: Attached hooks to {table_name}")
+
+    async def _handle_hook_event(self, table_name: str, event_type: str, payload: Dict[str, Any]):
+        """Unified handler for table hooks."""
+        item = payload.get("item")
+        if item: item = item.copy()
+        
+        key = payload.get("key")
+        base_rev = payload.get("base_rev")
+        base_doc = payload.get("base_doc")
+        optimistic = payload.get("optimistic", False)
+        
+        if optimistic:
+            # Ensure revision metadata is set on the item
+            if item and isinstance(item, dict):
+                _ensure_revision(item)
+            
+            # Mutation timestamp
+            mutation_ts = time.time() * 1000
+            
+            # Manual Sync Path: Construct mutation data but don't enqueue/push
+            mutation = {
+                "id": str(uuid.uuid4()),
+                "table": table_name,
+                "op": "put" if event_type in ("add", "update") else "delete",
+                # For put/add, value is the full document. For delete, it's a reference.
+                "value": item if event_type in ("add", "update") else {"ref_row": key},
+                "timestamp": mutation_ts,
+                # Top-level _rev and _lastModified represent the mutation metadata
+                "_rev": base_rev, 
+                "_lastModified": mutation_ts
+            }
+            
+            # Trigger global SyncManager hooks
+            hook_name = f"on_{event_type}"
+            await self.hook._trigger(hook_name, mutation)
+            
+            # Augment original payload for subsequent listeners (e.g. per-table hooks)
+            payload.update(mutation)
+            return
+
+        # Automatic Sync Path (Existing logic)
+        if event_type in ("add", "update"):
+            if item:
+                _ensure_revision(item)
+            await self.queue.enqueue(table_name, "put", key, item, base_rev=base_rev, base_doc=base_doc)
+        else:
+            await self.queue.enqueue(table_name, "delete", key, base_rev=base_rev, base_doc=base_doc)
+            
+        self._trigger_push()
 
     async def _process_loop(self):
         while self._running:
@@ -388,7 +440,7 @@ class SyncManager:
             
             # Pre-fetch pending mutations to identify "Dirty" records
             queue_items = await self.queue.peek(9999)
-            pending_keys = set((i.get("table"), i.get("key")) for i in queue_items)
+            pending_keys = set((i.get("table"), i.get("value", {}).get("ref_row")) for i in queue_items)
             
             conflicts_resolved = 0
             
@@ -396,7 +448,8 @@ class SyncManager:
                 table_name = doc.get("table")
                 key = doc.get("key")
                 val = doc.get("value")
-                deleted = doc.get("deleted", False)
+                # Support both for backward commpatibility or strict standard
+                deleted = doc.get("_deleted") or doc.get("deleted", False)
                 remote_rev = doc.get("_rev")
                 
                 table = self.db.table(table_name)
@@ -405,6 +458,14 @@ class SyncManager:
                 is_dirty = (table_name, key) in pending_keys
                 
                 if deleted:
+                    # Create Tombstone for remote_doc to allow LWW comparison
+                    # Try to get _lastModified from top-level doc or default to 0
+                    tombstone = {
+                        "_rev": remote_rev or "deleted",
+                        "_lastModified": doc.get("_lastModified", 0),
+                        "_deleted": True
+                    }
+                    
                     # If local is dirty, it's a conflict. If clean, safe to delete.
                     if is_dirty:
                         local_doc = await table.get(key)
@@ -412,7 +473,7 @@ class SyncManager:
                             table_name=table_name,
                             key=key,
                             local_doc=local_doc,
-                            remote_doc=None,  # Deleted
+                            remote_doc=tombstone, 
                             local_rev=_get_revision(local_doc) if local_doc else None,
                             remote_rev=remote_rev or "deleted"
                         )
@@ -578,19 +639,18 @@ class SyncManager:
                 resolved_doc = conflict.local_doc
             
             # Apply resolved document
-            if resolved_doc is None:
-                # Remote was deleted, but we're keeping local
-                return True  # Conflict handled (kept local)
-            elif conflict.remote_doc is None:
-                # Remote delete, but we resolved to keep local
-                # Don't delete, just update revision
-                _set_revision(resolved_doc)
-                await table.put(resolved_doc, key=key, silent=True)
-                return True
+            # Apply resolved document
+            if resolved_doc and resolved_doc.get("_deleted"):
+                 # Resolved to delete
+                 await table.delete(key, silent=True)
+                 return True
+            elif resolved_doc:
+                 # Normal update
+                 await table.put(resolved_doc, key=key, silent=True)
+                 return True
             else:
-                # Normal update
-                await table.put(resolved_doc, key=key, silent=True)
-                return True
+                 # Should not happen
+                 return True
                 
         except Exception as e:
             console.error(f"SyncManager: Error resolving conflict for {conflict.table_name}:{key}: {e}")
@@ -609,12 +669,16 @@ class SyncManager:
             
             for m in mutations:
                 val = m.get("value")
+                record_id = None
                 # Check for reference object structure (State-Based Sync)
                 if m["op"] in ("put", "add") and isinstance(val, dict) and "ref_row" in val:
+                    record_id = val["ref_row"]
+
+                if m["op"] in ("put", "add") and record_id is not None:
                     # Hydrate from DB
                     table = self.db.table(m["table"])
                     if table:
-                        current_val = await table.get(val["ref_row"])
+                        current_val = await table.get(record_id)
                         if current_val:
                             # Ensure revision is present
                             if "_rev" not in current_val:
@@ -623,7 +687,7 @@ class SyncManager:
                             hydrated_mutations.append(m)
                         else:
                             # Document deleted locally, skip push
-                            console.log(f"SyncManager: Skipping push for {m['table']}:{m['key']} - Document not found (deleted?)")
+                            console.log(f"SyncManager: Skipping push for {m['table']}:{record_id} - Document not found (deleted?)")
                             pass
                 else:
                     hydrated_mutations.append(m)
@@ -679,7 +743,7 @@ class SyncManager:
                 for m in mutations:
                     if m["id"] not in sent_mutation_ids:
                         ids_to_remove.append(m["id"])
-                    elif m["key"] in confirmed_keys:
+                    elif m["id"] in confirmed_keys:
                         ids_to_remove.append(m["id"])
                 
                 if ids_to_remove:

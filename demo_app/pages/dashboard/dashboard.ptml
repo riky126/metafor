@@ -87,7 +87,8 @@
     async def on_user_add(payload):
         # payload = {"item": ..., "key": ...}
         item = payload['item']
-        console.log(f"Syncing user {item['name']} to backend (async)...")
+        console.log(f"Syncing user name: {item['name']} to backend (async)...")
+        print(payload)
         await asyncio.sleep(1) # Simulate network
         console.log(f"Synced user {item['name']}!")
         # In real app: await fetch("/api/users", method="POST", body=item)
