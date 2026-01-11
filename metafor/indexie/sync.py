@@ -325,9 +325,9 @@ class SyncManager:
         async def on_delete(payload):
             await self._handle_hook_event(table_name, "delete", payload)
 
-        table.hook.on_add(on_add, prepend=True)
-        table.hook.on_update(on_update, prepend=True)
-        table.hook.on_delete(on_delete, prepend=True)
+        table.hook.on_add(on_add, priority_invoke=True)
+        table.hook.on_update(on_update, priority_invoke=True)
+        table.hook.on_delete(on_delete, priority_invoke=True)
         
         console.log(f"SyncManager: Attached hooks to {table_name}")
 

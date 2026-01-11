@@ -18,20 +18,20 @@ class HookRegistrar:
     def __init__(self):
         self._hooks = {}
 
-    def on_add(self, callback: Callable, prepend: bool = False):
-        self._register("on_add", callback, prepend=prepend)
+    def on_add(self, callback: Callable, priority_invoke: bool = False):
+        self._register("on_add", callback, priority_invoke=priority_invoke)
 
-    def on_update(self, callback: Callable, prepend: bool = False):
-        self._register("on_update", callback, prepend=prepend)
+    def on_update(self, callback: Callable, priority_invoke: bool = False):
+        self._register("on_update", callback, priority_invoke=priority_invoke)
 
-    def on_delete(self, callback: Callable, prepend: bool = False):
-        self._register("on_delete", callback, prepend=prepend)
+    def on_delete(self, callback: Callable, priority_invoke: bool = False):
+        self._register("on_delete", callback, priority_invoke=priority_invoke)
 
-    def _register(self, event: str, callback: Callable, prepend: bool = False):
+    def _register(self, event: str, callback: Callable, priority_invoke: bool = False):
         if event not in self._hooks:
             self._hooks[event] = []
         
-        if prepend:
+        if priority_invoke:
             self._hooks[event].insert(0, callback)
         else:
             self._hooks[event].append(callback)
