@@ -8,7 +8,7 @@
     from contexts import ThemeContext, DBContext
     from routes import router
     from metafor.storage import Indexie, use_live_query
-    from db import db
+    from store.db import db
     
     theme = use_context(ThemeContext)    
     count, set_count = create_signal(0)

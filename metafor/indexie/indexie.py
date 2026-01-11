@@ -31,7 +31,8 @@ class Indexie:
     def enable_sync(self, upstream_url: str, pull_enabled: bool = True, 
                     conflict_handler: Optional[Callable] = None,
                     conflict_strategy: str = SyncManager.ConflictStrategy.LAST_WRITE_WINS,
-                    push_path: str = "/push", pull_path: str = "/pull"):
+                    push_path: str = "/push", pull_path: str = "/pull",
+                    http_client: Optional[Any] = None):
         """
         Enable synchronization with conflict resolution.
         
@@ -47,6 +48,7 @@ class Indexie:
                 - "custom": Use conflict_handler function
             push_path: Custom push endpoint path (default: /push)
             pull_path: Custom pull endpoint path (default: /pull)
+            http_client: Optional HTTP client instance (e.g. metafor.http.Http)
         """
         from .sync import SyncManager, OfflineQueue, ReplicationState, ConflictHistory
         self.sync_manager = SyncManager(
@@ -56,7 +58,8 @@ class Indexie:
             conflict_handler=conflict_handler,
             conflict_strategy=conflict_strategy,
             push_path=push_path,
-            pull_path=pull_path
+            pull_path=pull_path,
+            http_client=http_client
         )
         
         # Register system tables so they are accessible via db.table(...) if needed, 
