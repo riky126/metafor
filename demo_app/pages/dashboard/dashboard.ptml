@@ -6,7 +6,7 @@
     from metafor.core import batch_updates, create_signal, on_dispose, on_mount
     from metafor.hooks import use_provider
     from metafor.utils import run_async
-    from services import fetch_account
+    from services import fetch_account, do_sync
     from metafor.indexie import Indexie, use_live_query
     from api_client import http_client
     from db import db
@@ -86,10 +86,11 @@
     # Simulate backend sync on adding user
     async def on_user_add(payload):
         # payload = {"item": ..., "key": ...}
-        item = payload['item']
-        console.log(f"Syncing user name: {item['name']} to backend (async)...")
         print(payload)
-        await asyncio.sleep(1) # Simulate network
+        item = payload['value']
+        console.log(f"Syncing user name: {item['name']} to backend (async)...")
+        
+        await do_sync({"mutations": [payload]}) # Simulate network
         console.log(f"Synced user {item['name']}!")
         # In real app: await fetch("/api/users", method="POST", body=item)
         

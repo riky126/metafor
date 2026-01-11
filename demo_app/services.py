@@ -73,3 +73,16 @@ def is_authenticated():
     tokens = local_storage.load("access_tokens") or {}
     app_state, _ = use_provider(container, app_provider)
     return tokens.get("access_token", None) != None and app_state()['auth_user'] is not None
+
+
+async def do_sync(payload):
+  
+    try:
+        # Refresh Token request
+        http_client.base_url = "http://localhost:8000"
+        response = await http_client.post("/sync/push", payload)
+        if response.get("status") == 200:
+            return response.get("data")
+        raise HttpError(response)        
+    except HttpError as e:
+        raise e
