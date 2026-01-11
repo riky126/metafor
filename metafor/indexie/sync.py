@@ -325,6 +325,11 @@ class SyncManager:
         async def on_delete(payload):
             await self._handle_hook_event(table_name, "delete", payload)
 
+        # Guard against double-attaching to the same table object
+        if hasattr(table.hook, "_sync_attached"):
+            return
+        table.hook._sync_attached = True
+        
         table.hook.on_add(on_add, priority_invoke=True)
         table.hook.on_update(on_update, priority_invoke=True)
         table.hook.on_delete(on_delete, priority_invoke=True)

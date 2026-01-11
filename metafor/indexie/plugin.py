@@ -31,6 +31,17 @@ class HookRegistrar:
         if event not in self._hooks:
             self._hooks[event] = []
         
+        # Prevent duplicate registration of functionally identical callbacks.
+        # Identity check handles same object.
+        # Name + Bytecode check handles re-definitions during component re-renders.
+        if callback in self._hooks[event]:
+            return
+        
+        # Structural check for reactive environments
+        if any(cb.__name__ == callback.__name__ and cb.__code__ == callback.__code__ 
+               for cb in self._hooks[event]):
+            return
+
         if priority_invoke:
             self._hooks[event].insert(0, callback)
         else:
@@ -38,7 +49,9 @@ class HookRegistrar:
 
     async def _trigger(self, event: str, payload: Any):
         if event in self._hooks:
-            for cb in self._hooks[event]:
+            # Taking a snapshot of the hooks list prevents newly registered hooks 
+            # (from re-renders mid-await) from being triggered in the current loop.
+            for cb in list(self._hooks[event]):
                 res = cb(payload)
                 if inspect.iscoroutine(res):
                     await res
@@ -101,7 +114,8 @@ class OverlayLayer:
                      val = op["value"].copy()
                      if is_temp_key and self.table.primary_key in val:
                          del val[self.table.primary_key]
-                     # Use silent=True because hooks were already triggered during the overlay phase
+                     # Use silent=True because hooks were already triggered during the overlay phase.
+                     # This prevents a second round of 'on_add' calls during commit.
                      await self.table.add(val, silent=True)
 
                  elif op["type"] == "put":
