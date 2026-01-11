@@ -25,7 +25,18 @@ class Indexie:
         self._tables: Dict[str, Table] = {}
         self._is_open = False
         self.query_engine = QueryEngine(self)
+        self.sync_manager = None
         
+    def enable_sync(self, upstream_url: str, pull_enabled: bool = True):
+        from .sync import SyncManager, OfflineQueue, ReplicationState
+        self.sync_manager = SyncManager(self, upstream_url, pull_enabled=pull_enabled)
+        
+        # Register system tables so they are accessible via db.table(...) if needed, 
+        # and so hooks don't try to attach to them (SyncManager handles exclusion but good to have them tracked)
+        self._tables[OfflineQueue.TABLE_NAME] = self.sync_manager.queue.table
+        self._tables[ReplicationState.TABLE_NAME] = self.sync_manager.state.table
+        return self
+
     def version(self, v: int) -> Version:
         ver = Version(self, v)
         return ver
@@ -115,6 +126,11 @@ class Indexie:
                              res = ver.upgrade_callback(txn)
                              if inspect.iscoroutine(res):
                                  asyncio.create_task(res)
+                
+                # Check for Sync Tables
+                if self.sync_manager:
+                     self._ensure_sync_tables(db, txn)
+
             finally:
                 _current_transaction_var.reset(token)
 
@@ -122,6 +138,10 @@ class Indexie:
             self._db_instance = event.target.result
             self._is_open = True
             console.log(f"Indexie: Opened {self.name} v{self._db_instance.version}")
+            
+            if self.sync_manager:
+                self.sync_manager.start()
+                
             future.set_result(self)
 
         def on_error(event):
@@ -134,6 +154,17 @@ class Indexie:
         req.onerror = create_proxy(on_error)
         
         return await future
+
+    def _ensure_sync_tables(self, db, txn):
+        # Create _sys_sync_queue (id, timestamp index)
+        if not db.objectStoreNames.contains("_sys_sync_queue"):
+            console.log("Indexie: Creating _sys_sync_queue")
+            store = db.createObjectStore("_sys_sync_queue", _to_js_obj({"keyPath": "id"}))
+            store.createIndex("timestamp", "timestamp", _to_js_obj({"unique": False}))
+
+        if not db.objectStoreNames.contains("_sys_sync_state"):
+            console.log("Indexie: Creating _sys_sync_state")
+            store = db.createObjectStore("_sys_sync_state", _to_js_obj({"keyPath": "id"}))
 
     def _apply_schema(self, db, txn, schema):
         for table_name, schema_str in schema.items():

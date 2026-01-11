@@ -4,7 +4,7 @@ import inspect
 import contextlib
 from typing import Any, Dict, Optional, Callable, List, TypeVar, Generic, Union
 from enum import Enum
-from js import console
+from js import console, navigator
 from metafor.form.schema import Schema
 from metafor.core import create_signal
 
@@ -39,6 +39,36 @@ class HookRegistrar:
                 if inspect.iscoroutine(res):
                     await res
 
+
+class DirectTransaction:
+    """
+    Transaction handler for offline direct-write mode.
+    
+    In this mode, there is no in-memory buffer. Operations (add/put/delete) are
+    executed immediately against the underlying database to ensure they are
+    captured by the Sync Queue hooks as soon as possible.
+    
+    Therefore, 'commit' is a no-op because the data is already persisted.
+    """
+    def __init__(self, table):
+        self.table = table
+
+    async def add(self, item: Dict[str, Any], key: Any = None):
+        return await self.table.add(item, key)
+
+    async def put(self, item: Dict[str, Any], key: Any = None):
+        return await self.table.put(item, key)
+
+    async def delete(self, key: Any):
+        return await self.table.delete(key)
+
+    async def commit(self):
+        # Auto-commit: Operations were already executed directly on the DB.
+        pass
+
+    async def rollback(self):
+        console.warn("Rollback is not supported in offline direct-write mode (operations are auto-committed).")
+
 class OverlayLayer:
     """In-memory layer for optimistic transactions."""
     def __init__(self, table: 'Table'):
@@ -57,6 +87,9 @@ class OverlayLayer:
                 item[self.table.primary_key] = key
         
         self.mutations[key] = {"type": "put", "value": item}
+        # Only trigger reactivity version update, NOT hooks (to avoid Sync Queue)
+        if self.visible:
+             self.table._set_version(self.table._version.peek() + 1)
         return key
         
     def put(self, item: Dict[str, Any], key: Any = None):
@@ -67,10 +100,14 @@ class OverlayLayer:
              item[self.table.primary_key] = pk
              
         self.mutations[pk] = {"type": "put", "value": item}
+        if self.visible:
+             self.table._set_version(self.table._version.peek() + 1)
         return pk
         
     def delete(self, key: Any):
         self.mutations[key] = {"type": "delete"}
+        if self.visible:
+             self.table._set_version(self.table._version.peek() + 1)
         
     def clear(self):
         self.mutations.clear()
@@ -123,16 +160,27 @@ class Table:
         
     @contextlib.asynccontextmanager
     async def start_transaction(self, optimistic: bool = False):
-        self._overlay.active = True
-        self._overlay.visible = optimistic
-        try:
-            yield self._overlay
-        except Exception:
-             await self._overlay.rollback()
-             raise
-        finally:
-             if self._overlay.active:
-                  await self._overlay.rollback()
+        # Check Network Status
+        if self.db.sync_manager:
+            is_online = self.db.sync_manager.is_online
+        else:
+            is_online = navigator.onLine
+        
+        if not is_online:
+            # Offline: Write directly to DB (triggering hooks for Sync Queue)
+            yield DirectTransaction(self)
+        else:
+            # Online: Use Optimistic Overlay (suppressing hooks to avoid Sync Queue)
+            self._overlay.active = True
+            self._overlay.visible = optimistic
+            try:
+                yield self._overlay
+            except Exception:
+                 await self._overlay.rollback()
+                 raise
+            finally:
+                 if self._overlay.active:
+                      await self._overlay.rollback()
         
     def attach_schema(self, schema: Schema):
         """Attaches a validation schema to the table."""
@@ -159,10 +207,7 @@ class Table:
         # 1. Overlay
         if self._overlay.active:
              res = self._overlay.add(item, key)
-             if self._overlay.visible:
-                 self._set_version(self._version.peek() + 1)
-                 if not silent:
-                     await self._trigger_hook("on_add", {"item": item, "key": res})
+             # Hooks removed here for Overlay path
              return res
 
         # Key injection handling is now done in QueryEngine, but we pass what we have.
@@ -191,10 +236,6 @@ class Table:
         # 1. Overlay
         if self._overlay.active:
              res = self._overlay.put(item, key)
-             if self._overlay.visible:
-                 self._set_version(self._version.peek() + 1)
-                 if not silent:
-                     await self._trigger_hook("on_update", {"item": item, "key": res})
              return res
         
         if self.strategy == Strategy.NETWORK_FIRST and not silent:
@@ -227,10 +268,6 @@ class Table:
     async def delete(self, key: Any, silent: bool = False):
         if self._overlay.active:
              self._overlay.delete(key)
-             if self._overlay.visible:
-                 self._set_version(self._version.peek() + 1)
-                 if not silent:
-                      await self._trigger_hook("on_delete", {"key": key, "all": False})
              return
              
         if self.strategy == Strategy.NETWORK_FIRST and not silent:
