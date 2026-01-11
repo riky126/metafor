@@ -63,6 +63,11 @@ class QueryEngine:
             return store.clear()
         return await self.db._execute_rw(table_name, logic)
         
+    async def get_all_keys(self, table_name):
+        def logic(store):
+            return store.getAllKeys()
+        return await self.db._execute_ro(table_name, logic)
+        
     async def delete_many(self, collection):
          """Optimized bulk delete."""
          conditions = collection._conditions

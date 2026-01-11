@@ -195,16 +195,20 @@ class Table:
         await self._hook_registrar._trigger(event, payload)
         
     async def add(self, item: Dict[str, Any], key: Any = None, silent: bool = False, optimistic: bool = False):
+        if not self.db._db_instance: 
+            await self.db._ensure_open()
+            
         # Validate before any operation
         self._validate_item(item)
         
         # Overlay
         if self._overlay.active:
-             res = self._overlay.add(item, key)
-             if not silent and self._overlay.visible:
-                  # Trigger hook immediately for Optimistic Sync/Manual Control
-                  await self._trigger_hook("on_add", {"item": item, "key": res, "optimistic": True})
-             return res
+            optimistic = True # Default to optimistic if overlay is active
+            res = self._overlay.add(item, key)
+            if not silent and self._overlay.visible:
+                 # Trigger hook immediately for Optimistic Sync/Manual Control
+                 await self._trigger_hook("on_add", {"item": item, "key": res, "optimistic": True})
+            return res
 
         res = await self.db.query_engine.add(self.name, item, key)
         self._set_version(self._version.peek() + 1)
@@ -213,26 +217,38 @@ class Table:
         return res
         
     async def put(self, item: Dict[str, Any], key: Any = None, silent: bool = False, optimistic: bool = False):
+        if not self.db._db_instance: 
+            await self.db._ensure_open()
+
         # Validate before any operation
         self._validate_item(item)
 
         pk_val = key or item.get(self.primary_key)
         
         # 1. Overlay
+        # 1. Overlay
         if self._overlay.active:
-             res = self._overlay.put(item, key)
-             if not silent and self._overlay.visible:
-                  # For optimistic manual sync, we need to provide base_rev to SyncManager refinement
-                  old_item = await self.get(pk_val) if pk_val is not None else None
-                  base_rev = old_item.get("_rev") if old_item else None
-                  await self._trigger_hook("on_update", {
-                      "item": item, 
-                      "key": res, 
-                      "base_rev": base_rev, 
-                      "base_doc": old_item,
-                      "optimistic": True
-                  })
-             return res
+            optimistic = True # Default to optimistic if overlay is active
+            
+            # Capture base_rev/base_doc BEFORE updating the overlay
+            old_item = None
+            if not silent and self._overlay.visible:
+                 old_item = await self.get(pk_val) if pk_val is not None else None
+            
+            base_rev = old_item.get("_rev") if old_item else None
+            
+            res = self._overlay.put(item, key)
+            
+            if not silent and self._overlay.visible:
+                 # For optimistic manual sync, we need to provide base_rev to SyncManager refinement
+                 await self._trigger_hook("on_update", {
+                     "item": item, 
+                     "key": res, 
+                     "base_rev": base_rev, 
+                     "base_doc": old_item,
+                     "optimistic": True
+                 })
+            return res
         
         # Capture base_rev for Revision Tree
         old_item = await self.get(pk_val) if pk_val is not None else None
@@ -274,11 +290,19 @@ class Table:
         return _run()
         
     async def delete(self, key: Any, silent: bool = False, optimistic: bool = False):
+        if not self.db._db_instance: 
+            await self.db._ensure_open()
+            
+        # Default to optimistic if overlay is active
         if self._overlay.active:
-             # Capture base_rev before overlay potentially masks/hides it
-             old_item = await self.get(key) if key is not None else None
-             base_rev = old_item.get("_rev") if old_item else None
+            optimistic = True
+            
+        # Optimization: Don't pre-fetch base_doc/base_rev for deletes unless absolutely necessary.
+        # User confirmed base_doc can be None for delete flow.
+        old_item = None
+        base_rev = None
              
+        if self._overlay.active:
              self._overlay.delete(key)
              if not silent and self._overlay.visible:
                   await self._trigger_hook("on_delete", {
@@ -291,8 +315,8 @@ class Table:
              return
              
         # Capture base_rev for Tombstone
-        old_item = await self.get(key) if key is not None else None
-        base_rev = old_item.get("_rev") if old_item else None
+        # old_item = await self.get(key) if key is not None else None # Already captured above
+        # base_rev = old_item.get("_rev") if old_item else None # Already captured above
 
         if self.strategy == Strategy.NETWORK_FIRST and not silent:
              await self._trigger_hook("on_delete", {"key": key, "all": False, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
@@ -307,12 +331,34 @@ class Table:
                 await self._trigger_hook("on_delete", {"key": key, "all": False, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
             return res
         
+    async def get_all_keys(self):
+        return await self.db.query_engine.get_all_keys(self.name)
+        
     async def clear(self, silent: bool = False, optimistic: bool = False):
-         res = await self.db.query_engine.clear(self.name)
-         self._set_version(self._version.peek() + 1)
-         if not silent:
-             await self._trigger_hook("on_delete", {"key": None, "all": True, "optimistic": optimistic})
-         return res
+        # If we are in an overlay, we should force optimistic behavior
+        if self._overlay.active:
+             optimistic = True
+             
+        # If we have an active overlay or we need hooks, we must be granular
+        if self._overlay.active or not silent:
+             # Get all keys from DB
+             db_keys = await self.get_all_keys()
+             
+             # Also get keys from overlay (in case of optimistic adds not yet in IDB)
+             overlay_keys = set()
+             if self._overlay.active:
+                 overlay_keys = {k for k, op in self._overlay.mutations.items() if op['type'] in ('add', 'put')}
+             
+             all_keys = set(db_keys) | overlay_keys
+             
+             for key in all_keys:
+                  await self.delete(key, silent=silent, optimistic=optimistic)
+             return
+             
+        # Bulk clear (Fast path - only if silent and no overlay)
+        res = await self.db.query_engine.clear(self.name)
+        self._set_version(self._version.peek() + 1)
+        return res
 
     def drop(self):
         if not self.db._db_instance:

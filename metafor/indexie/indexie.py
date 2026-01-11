@@ -276,15 +276,30 @@ class Indexie:
                  if hasattr(req, 'onsuccess'):
                      future = asyncio.Future()
                      def success(e):
-                        res = e.target.result
-                        if hasattr(res, 'to_py'): res = res.to_py()
-                        future.set_result(res)
+                        try:
+                            res = e.target.result
+                            if hasattr(res, 'to_py'): res = res.to_py()
+                            if not future.done():
+                                future.set_result(res)
+                        except Exception as ex:
+                            if not future.done():
+                                future.set_exception(ex)
+                                
                      def error(e):
-                        future.set_exception(IndexedDBError(str(e.target.error)))
-                        
-                     req.onsuccess = create_proxy(success)
-                     req.onerror = create_proxy(error)
-                     return await future
+                        if not future.done():
+                            future.set_exception(IndexedDBError(str(e.target.error)))
+                            
+                     req._onsuccess_proxy = create_proxy(success)
+                     req._onerror_proxy = create_proxy(error)
+                     
+                     req.onsuccess = req._onsuccess_proxy
+                     req.onerror = req._onerror_proxy
+                     
+                     try:
+                         return await future
+                     finally:
+                         req._onsuccess_proxy.destroy()
+                         req._onerror_proxy.destroy()
                  return req
 
         db = await self._ensure_open()

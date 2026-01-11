@@ -89,6 +89,11 @@ class OfflineQueue:
              stored_value = {
                  "ref_row": key
              }
+        elif op == "delete":
+             # Ensure delete_id is available in the value field for all sync hooks
+             stored_value = {
+                 "delete_id": key
+             }
         
         # Check for existing pending mutation for this key (Coalescing)
         # Note: We look for the record ID inside value.ref_row since top-level 'key' is removed.
@@ -365,12 +370,15 @@ class SyncManager:
                 "id": str(uuid.uuid4()),
                 "table": table_name,
                 "op": "put" if event_type == "add" else ("update" if event_type == "update" else "delete"),
-                # For put/add, value is the full document. For delete, it's a reference.
-                "value": item if event_type in ("add", "update") else {"ref_row": key},
+                # For put/add, value is the full document. 
+                # For delete, use the user-requested {delete_id: key} format.
+                "value": item if event_type in ("add", "update") else {"delete_id": key},
                 "timestamp": now,
-                # Top-level _rev and _lastModified represent the mutation metadata
+                # Top-level metadata for conflict resolution and manual sync
                 "_rev": base_rev, 
-                "_lastModified": int(now + 1) # Ensure slightly different for staggered timing
+                "base_doc": base_doc,
+                "_lastModified": int(now + 1),
+                "all": payload.get("all", False) # Pass through bulk flag if any
             }
             
             # Trigger global SyncManager hooks
