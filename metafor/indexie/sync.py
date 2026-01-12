@@ -560,7 +560,106 @@ class SyncManager:
                             conflicts_resolved += 1
                     else:
                         # Fast-Forward Update
-                        await table.put(val, key=key, silent=True)
+                        try:
+                            await table.put(val, key=key, silent=True)
+                        except Exception as e:
+                            # Handle Unique Constraint Violation (ConstraintError)
+                            err_msg = str(e)
+                            if "ConstraintError" in err_msg:
+                                console.warn(f"SyncManager: ConstraintError for {table_name}:{key}. Attempting to resolve via Conflict Strategy.")
+                                
+                                # Strategy: Resolve conflict by checking Strategy (Server Wins, Local Wins, etc)
+                                
+                                # 1. Try to parse index name from error message to find conflicting local record
+                                import re
+                                match = re.search(r"index ['\"](.*?)['\"]", err_msg, re.IGNORECASE)
+                                
+                                conflicting_keys = []
+                                
+                                if match:
+                                    index_name = match.group(1)
+                                    # We need to know the keyPath (column) for this index to look it up in 'val'
+                                    # Optimistic assumption: index_name is the column name (common in metafor)
+                                    if val and index_name in val:
+                                        col_val = val[index_name]
+                                        rec = await table.where(index_name).equals(col_val).first()
+                                        if rec:
+                                            c_key = rec.get(table.primary_key) if table.primary_key else (rec.get("id") or rec.get("uuid") or rec.get("_id"))
+                                            if c_key and c_key != key:
+                                                 conflicting_keys.append(c_key)
+                                
+                                if not conflicting_keys:
+                                    # Fallback: Robustly scan ALL unique indexes
+                                    # This is necessary because some browsers/implementations don't include index name in error
+                                    try:
+                                         unique_indexes = await self._get_unique_indexes(table_name)
+                                         
+                                         for idx_info in unique_indexes:
+                                             idx_name = idx_info["name"]
+                                             key_path = idx_info["keyPath"]
+                                             
+                                             # Support simple keyPath (string)
+                                             if isinstance(key_path, str):
+                                                 if key_path in val:
+                                                     check_val = val[key_path]
+                                                     # Check if a record exists with this unique value
+                                                     rec = await table.where(idx_name).equals(check_val).first()
+                                                     if rec:
+                                                          c_key = rec.get(table.primary_key) if table.primary_key else (rec.get("id") or rec.get("uuid") or rec.get("_id"))
+                                                          if c_key and c_key != key:
+                                                               console.log(f"SyncManager: Detected conflict on unique index '{idx_name}' ({key_path}={check_val})")
+                                                               conflicting_keys.append(c_key)
+                                             # TODO: Support compound keys (list)
+                                    except Exception as scan_e:
+                                         console.warn(f"SyncManager: Failed to scan unique indexes: {scan_e}")
+
+                                if conflicting_keys:
+                                     # Resolve using Conflict Strategy
+                                     for c_key in set(conflicting_keys):
+                                          conflict_rec = await table.get(c_key)
+                                          if not conflict_rec: continue 
+
+                                          # Create Conflict Object
+                                          conflict = Conflict(
+                                              table_name=table_name,
+                                              key=c_key, # Use local key as the conflict identifier
+                                              local_doc=conflict_rec,
+                                              remote_doc=val,
+                                              local_rev=_get_revision(conflict_rec), # Helper must be available
+                                              remote_rev=remote_rev
+                                          )
+                                          
+                                          # Use system strategy to pick winner
+                                          resolved_doc = await self._resolve_conflict(conflict, table, c_key, apply=False)
+                                          
+                                          if resolved_doc == val: # Remote Doc won (by object identity or content)
+                                               console.log(f"SyncManager: Constraint Conflict Resolved (Remote Wins/LWW). Deleting local {c_key} to make way for {key}.")
+                                               await table.delete(c_key, silent=True)
+                                               
+                                               try:
+                                                    await table.put(val, key=key, silent=True)
+                                                    console.log("SyncManager: Retry successful.")
+                                               except Exception as retry_err:
+                                                    console.error(f"SyncManager: Retry failed after cleanup: {retry_err}")
+                                                    continue
+                                          elif resolved_doc == conflict_rec: # Local Doc won
+                                               console.log(f"SyncManager: Constraint Conflict Resolved (Local Wins). Keeping local {c_key}, ignoring remote {key}.")
+                                               continue
+                                          elif resolved_doc is None:
+                                               console.warn(f"SyncManager: No resolution returned for {c_key}, skipping.")
+                                               continue
+                                          else:
+                                               console.warn("SyncManager: Merge strategy for unique conflict not fully supported, ignoring remote.")
+                                               continue
+
+                                else:
+                                     console.error(f"SyncManager: Could not identify conflicting record for {table_name}:{key}. Skipping document.")
+                                     # Swallow error to keep loop alive
+                                     continue
+                            else:
+                                # Not a constraint error, log and continue
+                                console.error(f"SyncManager: Put failed for {table_name}:{key}: {e}")
+                                continue
             
             if conflicts_resolved > 0:
                 console.log(f"SyncManager: Resolved {conflicts_resolved} conflicts")
@@ -575,10 +674,11 @@ class SyncManager:
             # Likely network error
             self._set_reachable(False)
 
-    async def _resolve_conflict(self, conflict: Conflict, table: Table, key: Any) -> bool:
+    async def _resolve_conflict(self, conflict: Conflict, table: Table, key: Any, apply: bool = True) -> Any:
         """
         Resolve a conflict using the configured strategy.
-        Returns True if conflict was resolved, False otherwise.
+        If apply is True (default), writes the resolution to DB and returns boolean success.
+        If apply is False, returns the resolved document (or None if no resolution).
         """
         try:
             # Record conflict for history
@@ -586,6 +686,7 @@ class SyncManager:
             
             resolved_doc = None
             
+            # ... (strategy logic omitted for brevity, logic remains same) ...
             if self.conflict_strategy == self.ConflictStrategy.LAST_WRITE_WINS:
                 # Compare timestamps if available
                 local_time = conflict.local_doc.get("_lastModified", 0) if conflict.local_doc else 0
@@ -689,6 +790,9 @@ class SyncManager:
                 console.warn(f"SyncManager: Unknown conflict strategy '{self.conflict_strategy}', using local-wins")
                 resolved_doc = conflict.local_doc
             
+            if not apply:
+                return resolved_doc
+
             # Apply resolved document
             if resolved_doc and resolved_doc.get("_deleted"):
                  # Resolved to delete
@@ -701,6 +805,7 @@ class SyncManager:
             else:
                  # Should not happen
                  return True
+
                 
         except Exception as e:
             console.error(f"SyncManager: Error resolving conflict for {conflict.table_name}:{key}: {e}")
@@ -708,6 +813,38 @@ class SyncManager:
             if conflict.local_doc:
                 await table.put(conflict.local_doc, key=key, silent=True)
             return False
+
+    async def _get_unique_indexes(self, table_name: str) -> List[Dict[str, Any]]:
+        """
+        Returns a list of unique indexes for the table.
+        Format: [{'name': 'indexName', 'keyPath': 'column'}]
+        """
+        def get_indexes_logic(store):
+            from js import Array
+            unique_list = []
+            names = store.indexNames
+            # IDBDOMStringList is not iterable in all Pyodide versions directly, use length/item
+            length = names.length
+            for i in range(length):
+                name = names.item(i)
+                idx = store.index(name)
+                if idx.unique:
+                    # Capture safely
+                    kp = idx.keyPath
+                    # Normalize keyPath (it can be JS proxy)
+                    if hasattr(kp, "to_py"): kp = kp.to_py()
+                    
+                    unique_list.append({"name": name, "keyPath": kp})
+                    
+            return _to_js_obj(unique_list)
+
+        try:
+            res = await self.db._execute_ro(table_name, get_indexes_logic)
+            if hasattr(res, "to_py"): res = res.to_py()
+            return res
+        except Exception as e:
+            console.warn(f"SyncManager: Failed to query index metadata: {e}")
+            return []
 
     async def _push(self):
         try:
