@@ -479,10 +479,10 @@ class SyncManager:
             documents = data.get("documents", [])
             checkpoint = data.get("checkpoint")
             
+            console.log(f"SyncManager: Pull received {len(documents)} docs")
+
             if not documents:
                 return
-
-            console.log(f"SyncManager: Pull received {len(documents)} docs")
 
             # Apply changes with conflict detection
             # We assume documents have { table, key, value, deleted: bool, _rev: str }
