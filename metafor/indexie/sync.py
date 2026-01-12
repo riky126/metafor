@@ -65,8 +65,6 @@ class ConflictHistory:
 # --- Revision Tracking ---
 # Moved to support.py
 
-
-
 class OfflineQueue:
     TABLE_NAME = "_sys_sync_queue"
 
@@ -692,7 +690,6 @@ class SyncManager:
                 resolved_doc = conflict.local_doc
             
             # Apply resolved document
-            # Apply resolved document
             if resolved_doc and resolved_doc.get("_deleted"):
                  # Resolved to delete
                  await table.delete(key, silent=True)
@@ -757,7 +754,6 @@ class SyncManager:
                 "client_id": str(self.db.name) # Use DB name or unique client ID
             }
             
-            # Send to server (Using fetch)
             # Send to server (Using fetch or http_client)
             if self.http_client:
                  try:

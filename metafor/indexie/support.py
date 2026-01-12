@@ -294,7 +294,6 @@ class Support:
         table._server_push = server_push # Store ref on table
         
         async def on_sse_message(event):
-            console.log(f"SSE Message Received: {event.data}")
             try:
                 if not event.data: return
                 data = JSON.parse(event.data)

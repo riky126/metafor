@@ -334,7 +334,15 @@ When syncing, Indexie automatically handles sync cursors and persistence for you
 2.  **Auto-Resume**: On app reload or re-connection, Indexie reads this stored cursor and automatically appends it to the request (e.g., `?checkpoint=<cursor>`).
 3.  **No Manual Work**: You do not need to manually track offsets. Just ensure your backend respects the `checkpoint` parameter.
 
-Incoming sync changes are applied "silently" to the local DB (updating the UI but *not* triggering your `on_add` hooks again), preventing sync loops.
+#### Server Requirements: System Fields
+
+For sync to function correctly, your backend **must** persist and return the following system fields in the pull/sync response:
+
+*   **`_rev`**: The generation-based revision ID (e.g., `1-9a7b...`). This is critical for conflict resolution and revisions trees.
+*   **`_lastModified`**: Timestamp (ms) of the last change. Used for "Last Write Wins" strategy.
+*   **`_deleted`**: Boolean flag indicating if the record is a tombstone (deleted). Crucial for propagating deletions to clients.
+
+Ensure your backend database schema includes these columns.
 
 ### 4. Sync Strategies (`Strategy`)
 
