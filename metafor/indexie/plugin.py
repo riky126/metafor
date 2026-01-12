@@ -369,7 +369,6 @@ class Table:
         obj = await self.get(key)
         
         if obj is None:
-             console.log(f"Table.update: Key {key} not found. Changes type: {type(changes)}")
              if isinstance(changes, dict):
                  obj = changes
              else:

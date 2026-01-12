@@ -110,9 +110,32 @@ class Support:
         Starts syncing this table with an ElectricSQL Shape.
         """
         
+        # --- Guard: Task Coalescing (Async Idempotency) ---
+        current_sync_task = getattr(table, "_active_sync_task", None)
+        if current_sync_task and not current_sync_task.done():
+            console.log(f"Sync already in progress for {url}, awaiting existing task.")
+            try:
+                return await current_sync_task
+            except Exception:
+                # If the original task failed, we might want to retry?
+                # For now, just return the result (or propagate error).
+                return
+        
+        # Register current task
+        try:
+            table._active_sync_task = asyncio.current_task()
+        except Exception:
+             pass # Might not be in a task context
+        
+        # --- Guard: Close existing connection if present ---
+        if getattr(table, "_server_push", None):
+            try:
+                table._server_push.close()
+            except: pass
+            
         # --- Phase 1: Initial Fetch (Snapshot) ---
         query_params = (params or {}).copy()
-        
+    
         console.log(f"Phase 1: Fetching Snapshot from {url}")
         
         offset = "-1"
