@@ -9,7 +9,7 @@
     from services import fetch_account, do_sync
     from metafor.indexie import Indexie, use_live_query
     from api_client import http_client
-    from db import db
+    from store.db import db
     from app_state import container, app_provider
 
     theme = use_context(ThemeContext)

@@ -184,7 +184,8 @@ class SyncManager:
     def __init__(self, db, upstream_url: str, push_interval: int = 5000, 
                  pull_enabled: bool = True, conflict_handler: Optional[Callable] = None,
                  conflict_strategy: str = ConflictStrategy.LAST_WRITE_WINS,
-                 push_path: str = "/push", pull_path: str = "/pull"):
+                 push_path: str = "/push", pull_path: str = "/pull",
+                 http_client: Optional[Any] = None):
         self.db = db
         self.upstream_url = upstream_url.rstrip('/')
         self.push_interval = push_interval
@@ -193,6 +194,7 @@ class SyncManager:
         self.conflict_strategy = conflict_strategy
         self.push_path = push_path
         self.pull_path = pull_path
+        self.http_client = http_client
         
         self.hook = HookRegistrar()
         self.queue = OfflineQueue(db, sync_manager=self)
@@ -231,23 +233,30 @@ class SyncManager:
     async def check_connection(self) -> bool:
         """Explicitly check if the server is reachable."""
         try:
-            from js import fetch
             # Use HEAD or GET to pull endpoint as lightweight check
             url = f"{self.upstream_url}{self.pull_path}"
             # Add timestamp to bypass cache
             url += f"?ping={int(time.time()*1000)}"
             
-            resp = await fetch(url, _to_js_obj({"method": "GET", "credentials": "include"}))
-            
-            if resp.ok:
-                self._set_reachable(True)
-                return True
+            if self.http_client:
+                 resp_dict = await self.http_client.get(url)
+                 if 200 <= resp_dict['status'] < 300:
+                      self._set_reachable(True)
+                      return True
+                 else:
+                      self._set_reachable(False, error=f"HTTP {resp_dict['status']}")
+                      return False
             else:
-                # console.warn(f"SyncManager: check_connection failed: {resp.status}")
-                self._set_reachable(False, error=f"HTTP {resp.status}")
-                return False
+                from js import fetch
+                resp = await fetch(url, _to_js_obj({"method": "GET", "credentials": "include"}))
+                
+                if resp.ok:
+                    self._set_reachable(True)
+                    return True
+                else:
+                    self._set_reachable(False, error=f"HTTP {resp.status}")
+                    return False
         except Exception as e:
-            # console.warn(f"SyncManager: check_connection error: {e}")
             self._set_reachable(False, error=str(e))
             return False
 
@@ -429,27 +438,45 @@ class SyncManager:
             if cursor:
                 url += f"?checkpoint={cursor}"
                 
-            from js import fetch
-            
-            pull_options = {
-                "method": "GET",
-                "credentials": "include"
-            }
-            resp = await fetch(url, _to_js_obj(pull_options))
-            
-            if not resp.ok:
-                console.warn(f"SyncManager: Pull failed {resp.status}")
-                # 404/500/403 might mean server issues, but reachable. 
-                # Network errors throw exception. 
-                # If 503, maybe unreachable. simpler to assume reachable if we got a response code.
-                if resp.status in (502, 503, 504): # Gateway errors
-                    self._set_reachable(False)
-                return
-            
-            self._set_reachable(True) # Success confirms reachability
+            if self.http_client:
+                 try:
+                     resp_dict = await self.http_client.get(url)
+                 except Exception as inner_e:
+                     console.error(f"SyncManager: http_client.get failed: {inner_e!r}")
+                     raise inner_e
+                 
+                 if not (200 <= resp_dict['status'] < 300):
+                      console.warn(f"SyncManager: Pull failed {resp_dict['status']}")
+                      if resp_dict['status'] in (502, 503, 504):
+                           self._set_reachable(False)
+                      return
+                 
+                 self._set_reachable(True)
+                 data = resp_dict['data']
+                 if hasattr(data, "to_py"): data = data.to_py()
+                 
+            else:
+                from js import fetch
+                
+                pull_options = {
+                    "method": "GET",
+                    "credentials": "include"
+                }
+                resp = await fetch(url, _to_js_obj(pull_options))
+                
+                if not resp.ok:
+                    console.warn(f"SyncManager: Pull failed {resp.status}")
+                    # 404/500/403 might mean server issues, but reachable. 
+                    # Network errors throw exception. 
+                    # If 503, maybe unreachable. simpler to assume reachable if we got a response code.
+                    if resp.status in (502, 503, 504): # Gateway errors
+                        self._set_reachable(False)
+                    return
+                
+                self._set_reachable(True) # Success confirms reachability
 
-            data = await resp.json()
-            if hasattr(data, "to_py"): data = data.to_py()
+                data = await resp.json()
+                if hasattr(data, "to_py"): data = data.to_py()
             
             documents = data.get("documents", [])
             checkpoint = data.get("checkpoint")
@@ -731,57 +758,75 @@ class SyncManager:
             }
             
             # Send to server (Using fetch)
-            # implementation detail: assumed endpoint format
-            from js import fetch, JSON, Object
-            
-            headers = {"Content-Type": "application/json"}
-            
-            # Create a Headers object
-            js_headers = window.Headers.new()
-            for k, v in headers.items():
-                js_headers.append(k, v)
+            # Send to server (Using fetch or http_client)
+            if self.http_client:
+                 try:
+                     resp_dict = await self.http_client.post(f"{self.upstream_url}{self.push_path}", data=payload)
+                 except Exception as inner_e:
+                     console.error(f"SyncManager: http_client.post failed: {inner_e!r}")
+                     raise inner_e
 
-            options = {
-                "method": "POST",
-                "headers": js_headers,
-                "body": JSON.stringify(_to_js_obj(payload)),
-                "credentials": "include"
-            }
-            
-            resp = await fetch(f"{self.upstream_url}{self.push_path}", _to_js_obj(options))
-            
-            if resp.ok:
-                # Parse confirmation receipt
-                data = await resp.json()
-                if hasattr(data, "to_py"): data = data.to_py()
-                
-                receipts = data.get("sync_receipts", [])
-                confirmed_keys = set()
-                for r in receipts:
-                    if isinstance(r, dict) and "key" in r:
-                        confirmed_keys.add(r["key"])
-
-                # Remove processed items
-                # 1. Skipped items (not in hydrated_mutations) are always removed (locally handled)
-                # 2. Sent items are removed ONLY if confirmed by server
-                sent_mutation_ids = set(m["id"] for m in hydrated_mutations)
-                ids_to_remove = []
-                
-                for m in mutations:
-                    if m["id"] not in sent_mutation_ids:
-                        ids_to_remove.append(m["id"])
-                    elif m["id"] in confirmed_keys:
-                        ids_to_remove.append(m["id"])
-                
-                if ids_to_remove:
-                    await self.queue.remove(ids_to_remove)
-                    console.log(f"SyncManager: Pushed and confirmed {len(ids_to_remove)} mutations")
-                
-                self._set_reachable(True) # Success
+                 if 200 <= resp_dict['status'] < 300:
+                      data = resp_dict['data']
+                      if hasattr(data, "to_py"): data = data.to_py()
+                 else:
+                      console.warn(f"SyncManager: Push failed {resp_dict['status']}")
+                      if resp_dict['status'] in (502, 503, 504):
+                           self._set_reachable(False)
+                      return
             else:
-                console.warn(f"SyncManager: Push failed {resp.status}")
-                if resp.status in (502, 503, 504):
-                    self._set_reachable(False)
+                # implementation detail: assumed endpoint format
+                from js import fetch, JSON, Object
+                
+                headers = {"Content-Type": "application/json"}
+                
+                # Create a Headers object
+                js_headers = window.Headers.new()
+                for k, v in headers.items():
+                    js_headers.append(k, v)
+
+                options = {
+                    "method": "POST",
+                    "headers": js_headers,
+                    "body": JSON.stringify(_to_js_obj(payload)),
+                    "credentials": "include"
+                }
+                
+                resp = await fetch(f"{self.upstream_url}{self.push_path}", _to_js_obj(options))
+                
+                if resp.ok:
+                    # Parse confirmation receipt
+                    data = await resp.json()
+                    if hasattr(data, "to_py"): data = data.to_py()
+                else:
+                    console.warn(f"SyncManager: Push failed {resp.status}")
+                    if resp.status in (502, 503, 504):
+                        self._set_reachable(False)
+                    return
+            
+            receipts = data.get("sync_receipts", [])
+            confirmed_keys = set()
+            for r in receipts:
+                if isinstance(r, dict) and "key" in r:
+                    confirmed_keys.add(r["key"])
+
+            # Remove processed items
+            # 1. Skipped items (not in hydrated_mutations) are always removed (locally handled)
+            # 2. Sent items are removed ONLY if confirmed by server
+            sent_mutation_ids = set(m["id"] for m in hydrated_mutations)
+            ids_to_remove = []
+            
+            for m in mutations:
+                if m["id"] not in sent_mutation_ids:
+                    ids_to_remove.append(m["id"])
+                elif m["id"] in confirmed_keys:
+                    ids_to_remove.append(m["id"])
+            
+            if ids_to_remove:
+                await self.queue.remove(ids_to_remove)
+                console.log(f"SyncManager: Pushed and confirmed {len(ids_to_remove)} mutations")
+            
+            self._set_reachable(True) # Success
 
         except Exception as e:
             console.error(f"SyncManager Push Error: {e}")
