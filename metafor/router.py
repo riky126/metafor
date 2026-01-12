@@ -90,7 +90,7 @@ class Router:
     HASH_MODE = RouteMode.HASH_MODE
     HISTORY_MODE = RouteMode.HISTORY_MODE
 
-    def __init__(self, routes: List[Route], initial_route: str = "/",
+    def __init__(self, routes: List[Route], initial_route: Optional[str] = None,
                  before_hooks: Optional[List[Callable]] = None,
                  after_hooks: Optional[List[Callable]] = None,
                  mode: str = HASH_MODE, base_path: str = ""):

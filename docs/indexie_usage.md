@@ -326,9 +326,13 @@ from metafor.http import Http
 await db.users.sync_electric(
     url="...",
     params={"table": "users"},
-    http_client=db.http # Instance of metafor.http.client.Http
-)
-```
+#### Automatic Checkpointing & Resume
+
+When syncing, Indexie automatically handles sync cursors and persistence for you:
+
+1.  **Persistence**: Every time a sync pull is processed, the `checkpoint` (or `electric-offset`) is stored in a dedicated system table (`_sys_sync_state`).
+2.  **Auto-Resume**: On app reload or re-connection, Indexie reads this stored cursor and automatically appends it to the request (e.g., `?checkpoint=<cursor>`).
+3.  **No Manual Work**: You do not need to manually track offsets. Just ensure your backend respects the `checkpoint` parameter.
 
 Incoming sync changes are applied "silently" to the local DB (updating the UI but *not* triggering your `on_add` hooks again), preventing sync loops.
 

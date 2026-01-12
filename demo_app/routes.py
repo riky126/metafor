@@ -24,7 +24,7 @@ routes = [
     Route(Login, page_title="Login")
 ]
 
-router = Router(routes, initial_route=None, mode=Router.HASH_MODE)
+router = Router(routes, mode=Router.HASH_MODE)
 
 router.before_routing(is_user_logged_in)
 router.before_routing(route_guard)
