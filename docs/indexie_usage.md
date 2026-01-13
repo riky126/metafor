@@ -117,6 +117,14 @@ Use `.clear()` to delete all records in a table.
 await db.users.clear()
 ```
 
+Use `.exhume()` to permanently remove all tombstone (deleted) records from a table. This is useful for cleaning up soft-deleted records that are no longer needed.
+
+```python
+# Remove all deleted records and return the count
+deleted_count = await db.users.exhume()
+print(f"Removed {deleted_count} tombstone records")
+```
+
 ## Querying
 
 Indexie supports fluent querying using `.where(index)`.

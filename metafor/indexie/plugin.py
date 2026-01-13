@@ -489,11 +489,25 @@ class Table:
         c = Collection(self, None)
         c.offset(n)
         return c
-        
+
     def reverse(self):
         c = Collection(self, None)
         c.reverse()
         return c
+
+    async def exhume(self) -> int:
+        """
+        Permanently removes all tombstone (deleted) records from the table.
+        Returns the number of records that were exhumed.
+        """
+        if not self.db._db_instance:
+            await self.db._ensure_open()
+
+        # Create a collection filtered for tombstones and delete them all at once
+        collection = self.filter(lambda record: record.get("_deleted") or record.get("deleted"))
+        deleted_count = await collection.delete()
+
+        return deleted_count
 
     async def _execute_query(self, collection: 'Collection'):
         return await self.db.query_engine.execute_query(collection)
