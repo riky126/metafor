@@ -333,7 +333,30 @@ from metafor.http import Http
 # Assuming your client has auth interceptors set up
 await db.users.sync_electric(
     url="...",
-    params={"table": "users"},
+    params={"table": "users"}
+)
+```
+
+### 4. Native Sync (Custom Backend)
+
+For custom backends, Indexie provides a built-in synchronization engine that handles offline queuing, conflict resolution, and delta updates.
+
+```python
+db.enable_sync(
+    upstream_url="http://localhost:8000/sync",
+    pull_enabled=True,           # Enable pulling changes from server
+    poll_timeout=60,             # Long polling timeout (seconds)
+    debounce_interval=1000       # Debounce push requests (ms)
+)
+```
+
+**Configuration Options:**
+
+*   `upstream_url`: URL of your sync backend.
+*   `debounce_interval`: Time in ms to wait to batch multiple local changes into one push request.
+*   `poll_timeout`: Long-polling timeout.
+*   `conflict_strategy`: Strategy to resolve conflicts (`last_write_wins`, etc).
+
 #### Automatic Checkpointing & Resume
 
 When syncing, Indexie automatically handles sync cursors and persistence for you:
