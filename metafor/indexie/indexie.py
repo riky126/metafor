@@ -34,7 +34,7 @@ class Indexie:
                     push_path: str = "/push", pull_path: str = "/pull",
                     poll_timeout: int = 30,
                     chunk_size: int = -1,
-                    debounce_interval: int = 1000,
+                    debounce_interval: int = 200,
                     http_client: Optional[Any] = None):
         """
         Enable synchronization with conflict resolution.

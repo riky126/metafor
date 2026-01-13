@@ -15,7 +15,7 @@ db.enable_sync(
     upstream_url="http://localhost:8000/sync", 
     pull_enabled=True,
     poll_timeout=30,
-    debounce_interval=1000,
+    debounce_interval=500,
     http_client=http_client
 )
 

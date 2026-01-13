@@ -190,7 +190,7 @@ class SyncManager:
                  push_path: str = "/push", pull_path: str = "/pull",
                  poll_timeout: int = 60,
                  chunk_size: int = -1,
-                 debounce_interval: int = 1000,
+                 debounce_interval: int = 200,
                  http_client: Optional[Any] = None):
         self.db = db
         self.upstream_url = upstream_url.rstrip('/')
@@ -294,27 +294,28 @@ class SyncManager:
                 
                 # Debounce Logic: 
                 # Once triggered, wait for 'debounce_interval'. 
-                # If triggered again during this wait, we "restart" the wait (up to a limit if desired, but simple debounce for now).
-                # Actually, standard debounce means: Wait valid time AFTER last event.
-                # Implementation:
-                # 1. Clear event immediately.
-                # 2. Enter debounce loop.
-                self._push_event.clear()
+                # If triggered again during this wait, we "restart" the wait.
                 
-                debounce_sec = self.debounce_interval / 1000.0
+                # 1. Clear event immediately.
+                self._push_event.clear()
+                console.log(f"SyncManager: Local change detected. Debouncing for {self.debounce_interval}ms...")
+                
+                debounce_sec = self.debounce_interval / 500.0
                 while True:
                     try:
                         # Wait for potentially MORE events
                         await asyncio.wait_for(self._push_event.wait(), timeout=debounce_sec)
                         self._push_event.clear() # Reset and loop (timer restart)
-                        # Optional: Add max_wait check here to force push eventually
+                        console.log(f"SyncManager: Activity detected during debounce. Resetting timer ({self.debounce_interval}ms).")
                     except asyncio.TimeoutError:
                         # Implementation detail: Timeout means NO new events for debounce_sec.
                         # Stabilization achieved!
+                        console.log("SyncManager: Debounce stabilized. Pushing changes...")
                         break
                         
             except asyncio.TimeoutError:
-                pass # Interval elapsed (Periodic sync)
+                # Periodic sync (if using push_interval as backup/heartbeat)
+                pass
 
     async def _pull_loop(self):
         while self._running:
