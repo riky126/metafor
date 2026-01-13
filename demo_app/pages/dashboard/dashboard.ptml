@@ -7,7 +7,7 @@
     from metafor.hooks import use_provider
     from metafor.utils import run_async
     from services import fetch_account, do_sync
-    from metafor.indexie import Indexie, use_live_query
+    from metafor.indexie import Indexie, live_query
     from api_client import http_client
     from store.db import db
     from app_state import container, app_provider
@@ -54,7 +54,7 @@
     
     # --- Reactive Query Example ---
     # This list will automatically update when 'users' table changes.
-    users_list = use_live_query(lambda: db.users.order_by("id").reverse().offset(0).limit(10).to_array())
+    users_list = live_query(lambda: db.users.order_by("id").reverse().offset(0).limit(10).to_array())
 
     async def add_random_user():
         import random

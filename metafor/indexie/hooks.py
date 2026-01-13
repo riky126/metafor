@@ -4,7 +4,7 @@ from js import console
 import asyncio
 import inspect
 
-def use_live_query(query_fn: Callable[[], Any]):
+def live_query(query_fn: Callable[[], Any]):
     """
     A hook that runs a query and keeps it updated when underlying tables change.
     Uses metafor's signal system (create_effect) to track dependencies.

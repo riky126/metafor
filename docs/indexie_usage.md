@@ -258,15 +258,15 @@ except StorageError as e:
 
 Indexie includes advanced features for building reactive, local-first applications.
 
-### 1. Live Queries (`use_live_query`)
+### 1. Live Queries (`live_query`)
 
-The `use_live_query` hook makes your UI automatically reactive to database changes. It tracks dependencies and re-runs the query whenever the underlying table data changes.
+The `live_query` hook makes your UI automatically reactive to database changes. It tracks dependencies and re-runs the query whenever the underlying table data changes.
 
 ```python
-from metafor.storage import use_live_query
+from metafor.storage import live_query
 
 # This list updates automatically when 'users' table changes
-users = use_live_query(lambda: db.users.to_array())
+users = live_query(lambda: db.users.to_array())
 ```
 
 ### 2. Mutation Hooks & Optimistic Updates
@@ -473,7 +473,8 @@ graph TD
     T -->|Trigger Hook| API
 ```
 
-*   **Reads**: `use_live_query` merges data from the **Memory Overlay** (if visible) and **IndexedDB**.
+*   **Reads**: `live_query` merges data from the **Memory Overlay** (if visible) and **IndexedDB**.
 *   **Writes**: Mutations update the **Overlay**.
     *   **Optimistic (`optimistic=True`)**: Overlay is `visible`. UI updates instantly.
     *   **Standard (`optimistic=False`)**: Overlay is `hidden`. UI updates only on `commit`.
+

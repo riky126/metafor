@@ -6,7 +6,7 @@ from js import console
 from metafor.utils.runtime import is_server_side
 
 # Import Indexie components
-from metafor.indexie import Indexie, Table, Collection, Strategy, IndexedDBError, StorageError, use_live_query
+from metafor.indexie import Indexie, Table, Collection, Strategy, IndexedDBError, StorageError, live_query
 
 # --- Browser Storage Helpers ---
 

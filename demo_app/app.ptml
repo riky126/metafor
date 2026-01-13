@@ -7,7 +7,7 @@
     from metafor.hooks import use_context
     from contexts import ThemeContext, DBContext
     from routes import router
-    from metafor.storage import Indexie, use_live_query
+    from metafor.indexie import live_query
     from store.db import db
     
     theme = use_context(ThemeContext)    
