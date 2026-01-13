@@ -48,10 +48,14 @@ class QueryEngine:
                 return store.put(js_val, key) if key else store.put(js_val)
         return await self.db._execute_rw(table_name, logic)
         
-    async def get(self, table_name, key):
+    async def get(self, table_name, key, include_deleted=False):
         def logic(store):
             return store.get(key)
-        return await self.db._execute_ro(table_name, logic)
+        res = await self.db._execute_ro(table_name, logic)
+        # Soft Delete Check
+        if not include_deleted and res and (res.get("_deleted") or res.get("deleted")):
+            return None
+        return res
 
     async def delete(self, table_name, key):
         def logic(store):
@@ -125,38 +129,12 @@ class QueryEngine:
          return count
 
     async def count(self, collection):
-        """Optimized count."""
-        conditions = collection._conditions
-        filter_fn = collection._filter_fn
-        
-        # Optimize only if simple query and no custom python filter
-        if (not conditions or len(conditions) == 1) and filter_fn is None and collection._limit is None and collection._offset == 0:
-            cond = conditions[0] if conditions else {"index": ":primary", "op": None, "value": None}
-            index = cond.get("index")
-            op = cond.get("op")
-            val = cond.get("value")
-            
-            def count_logic(store):
-                target = store
-                if index and index not in [":primary", ":id"]:
-                    target = store.index(index)
-                
-                from js import IDBKeyRange
-                key_range = None
-                if op == "equals": key_range = IDBKeyRange.only(val)
-                elif op == "above": key_range = IDBKeyRange.lowerBound(val, True)
-                elif op == "below": key_range = IDBKeyRange.upperBound(val, True)
-                elif op == "starts_with": 
-                     v = val
-                     nv = v[:-1] + chr(ord(v[-1]) + 1)
-                     key_range = IDBKeyRange.bound(v, nv, False, True)
-                
-                return target.count(key_range) if key_range else target.count()
-
-            return await self.db._execute_ro(collection.table.name, count_logic)
-
-        # Fallback to fetching all (expensive!)
-        # Check if we can use execute_query which handles overlays etc.
+        """
+        Count records (respecting soft deletes).
+        We MUST bypass the fast store.count() optimization because it includes deleted records.
+        """
+        # For now, we fallback to execute_query which uses the filtered JS cursor.
+        # Ideally we would have a JS_COUNT_CURSOR_CODE optimized for this.
         results = await self.execute_query(collection)
         return len(results)
 
@@ -255,7 +233,10 @@ class QueryEngine:
                         reverse,
                         offset,
                         limit,
-                        filter_fn
+                        offset,
+                        limit,
+                        filter_fn,
+                        collection._include_deleted # Explicitly pass include_deleted
                     )
             except Exception as e:
                 # If native cursor fails (e.g. Index not found because field is not indexed),
@@ -275,46 +256,54 @@ class QueryEngine:
         return self._apply_overlay(results, collection)
 
     def _apply_overlay(self, results, collection):
-         # Logic ported from Indexie._execute_query
-         table = collection.table
-         overlay = table._overlay # Access internal overlay
-         
-         if overlay.active and overlay.visible:
-             pk = table.primary_key
-             order_by = collection._order_by
-             reverse = collection._reverse
-             
-             # Apply Deletes
-             deleted_keys = {k for k, v in overlay.mutations.items() if v['type'] == 'delete'}
-             if deleted_keys:
-                 results = [r for r in results if r.get(pk) not in deleted_keys]
+          # Logic ported from Indexie._execute_query
+          table = collection.table
+          overlay = table._overlay # Access internal overlay
+          include_deleted = getattr(collection, "_include_deleted", False)
+          
+          if overlay.active and overlay.visible:
+              pk = table.primary_key
+              order_by = collection._order_by
+              reverse = collection._reverse
+              
+              # Apply Deletes (Hard and Soft)
+              deleted_keys = set()
+              for k, v in overlay.mutations.items():
+                  if v['type'] == 'delete':
+                      deleted_keys.add(k)
+                  elif not include_deleted and v['type'] == 'put' and (v['value'].get("_deleted") or v['value'].get("deleted")):
+                      deleted_keys.add(k)
+ 
+              if deleted_keys:
+                  results = [r for r in results if r.get(pk) not in deleted_keys]
+ 
+              # Apply Puts
+              for key, op in overlay.mutations.items():
+                  if op['type'] == 'put':
+                       val = op['value']
+                       if not include_deleted and (val.get("_deleted") or val.get("deleted")): continue
+ 
+                       # Merge/Replace
+                       # We need to check if it's already in the result set to replace it
+                       existing_idx = -1
+                       for i, r in enumerate(results):
+                            if r.get(pk) == key:
+                                existing_idx = i
+                                break
+                       
+                       if existing_idx != -1:
+                            results[existing_idx] = val
+                       else:
+                            # Add to results (optimistic add)
+                            results.append(val)
+                            
+              # Re-sort if we touched things
+              if order_by:
+                  try:
+                      results.sort(key=lambda x: x.get(order_by), reverse=reverse)
+                  except: pass
 
-             # Apply Puts
-             for key, op in overlay.mutations.items():
-                 if op['type'] == 'put':
-                      val = op['value']
-                      
-                      # Merge/Replace
-                      # We need to check if it's already in the result set to replace it
-                      existing_idx = -1
-                      for i, r in enumerate(results):
-                           if r.get(pk) == key:
-                               existing_idx = i
-                               break
-                      
-                      if existing_idx != -1:
-                           results[existing_idx] = val
-                      else:
-                           # Add to results (optimistic add)
-                           results.append(val)
-                           
-             # Re-sort if we touched things
-             if order_by:
-                 try:
-                     results.sort(key=lambda x: x.get(order_by), reverse=reverse)
-                 except: pass
-
-         return results
+          return results
 
     async def _execute_fast_cursor(self, store_name, index, op, value, reverse, offset, limit):
         # Setup KeyRange in IDB transaction
@@ -348,7 +337,7 @@ class QueryEngine:
              
         return batch_results
 
-    async def _execute_native_cursor_with_filter(self, store_name, index, op, value, reverse, offset, limit, filter_fn):
+    async def _execute_native_cursor_with_filter(self, store_name, index, op, value, reverse, offset, limit, filter_fn, include_deleted=False):
         # Python Logic for complex filtering
         
         from js import IDBKeyRange
@@ -376,9 +365,22 @@ class QueryEngine:
             def on_success(e):
                 cursor = e.target.result
                 if cursor:
-                    # Get Item
                     item = cursor.value
                     
+                    is_deleted = False
+                    if not include_deleted:
+                        if item and (getattr(item, "_deleted", False) or getattr(item, "deleted", False)):
+                             is_deleted = True
+                        # Check dict access too if it's a proxy
+                        try:
+                            if item and (item.get("_deleted") or item.get("deleted")):
+                                 is_deleted = True
+                        except: pass
+                    
+                    if is_deleted:
+                        cursor.continue_()
+                        return
+
                     # Apply Filter
                     should_include = True
                     # Must convert to Python for the lambda
@@ -473,7 +475,13 @@ class QueryEngine:
             if hasattr(batch, 'to_py'): batch = batch.to_py()
             
             pk = collection.table.primary_key
+            include_deleted = getattr(collection, "_include_deleted", False)
+
             for item in batch:
+                if not include_deleted:
+                    if item and (item.get("_deleted") or item.get("deleted")):
+                        continue
+
                 item_key = None
                 if pk:
                     item_key = item.get(pk)
@@ -481,7 +489,10 @@ class QueryEngine:
                     item_key = item.get("id")
                 
                 if item_key is not None:
-                    all_results_dict[item_key] = item
+                    # Soft delete check
+                    include_deleted = getattr(collection, "_include_deleted", False)
+                    if include_deleted or not (item.get("_deleted") or item.get("deleted")):
+                        all_results_dict[item_key] = item
                 else:
                     pass
 

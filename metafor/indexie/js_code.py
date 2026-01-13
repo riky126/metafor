@@ -17,7 +17,7 @@ JS_FAST_CURSOR_CODE = """
         }
 
         let count = 0;
-        let advanced = false;
+        let skipped = 0;
         let results = [];
         
         req.onsuccess = (e) => {
@@ -27,10 +27,16 @@ JS_FAST_CURSOR_CODE = """
                 return;
             }
             
-            // Native skip using advance()
-            if (offset > 0 && !advanced) {
-                advanced = true;
-                cursor.advance(offset);
+            // Soft Delete Filter
+            if (cursor.value && (cursor.value._deleted || cursor.value.deleted)) {
+                cursor.continue();
+                return;
+            }
+            
+            // Manual skip (since we can't use advance() safely with filtering)
+            if (offset > 0 && skipped < offset) {
+                skipped++;
+                cursor.continue();
                 return;
             }
             

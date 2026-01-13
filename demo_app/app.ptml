@@ -19,18 +19,18 @@
         await db.open()
         DBContext.set_value(db)
         
-        try:
-             # Check if user exists
-             existing_user = await db.users.where("email").equals("halem@mail.com").first()
+        # try:
+        #      # Check if user exists
+        #      existing_user = await db.users.where("email").equals("halem@mail.com").first()
              
-             if not existing_user:
-                 user_id = await db.users.add({"name": "Nehalem Doe", "email": "halem@mail.com"})
-                 print("Created user with id:", user_id)
-             else:
-                 console.log("User 'halem@mail.com' already exists.")
+        #      if not existing_user:
+        #          user_id = await db.users.add({"name": "Nehalem Doe", "email": "halem@mail.com"})
+        #          print("Created user with id:", user_id)
+        #      else:
+        #          console.log("User 'halem@mail.com' already exists.")
                  
-        except Exception as e:
-            console.error("DB Error:", str(e))
+        # except Exception as e:
+        #     console.error("DB Error:", str(e))
 
     # Connect on mount
     def on_db_mount():

@@ -495,45 +495,88 @@ class SyncManager:
             
             conflicts_resolved = 0
             
-            for doc in documents:
-                table_name = doc.get("table")
-                key = doc.get("key")
-                val = doc.get("value")
-                # Support both for backward commpatibility or strict standard
-                deleted = doc.get("_deleted") or doc.get("deleted", False)
-                remote_rev = doc.get("_rev")
+            # Process documents from server
+            for d in documents:
+                table_name = d["table"]
+                key = d["key"]
                 
+                # Get value first!
+                val = d.get("value")
+
+                # Safely handle JsNull or None
+                if val is None:
+                    val = {}
+                elif hasattr(val, "to_py"):
+                    val = val.to_py() # Ensure we have a python dict if possible
+                elif str(val) == "[object PyProxy]":
+                     # Fallback if to_py missing but still proxy (JsNull shouldn't be here if converted)
+                     pass
+
+                # If checking if val is effectively empty/null for logic
+                if not val and not isinstance(val, dict):
+                     val = {}
+
+                val_wrapper = d # Keep reference to wrapper for metadata extraction
+                _deleted = d.get("_deleted", False) or d.get("deleted", False)
+                
+                # Safe access to _rev
+                val_rev = val.get("_rev") if isinstance(val, dict) else None
+                remote_rev = d.get("_rev") or val_rev
+                
+                # If deleted, treat val as tombstone or create one if val is None
+                if _deleted:
+                     # For deleted items, val is often None. Initialize as tombstone dict.
+                     if not isinstance(val, dict): val = {}
+                     val["_deleted"] = True
+                     
                 table = self.db.table(table_name)
                 if not table: continue
                 
                 is_dirty = (table_name, key) in pending_keys
                 
-                if deleted:
+                if _deleted:
                     # Create Tombstone for remote_doc to allow LWW comparison
                     # Try to get _lastModified from top-level doc or default to 0
                     tombstone = {
                         "_rev": remote_rev or "deleted",
-                        "_lastModified": doc.get("_lastModified", 0),
+                        "_lastModified": d.get("_lastModified", 0),
                         "_deleted": True
                     }
+
+                    
+                    # Key Correction:
+                    # User states that key in payload might be different from record ID.
+                    # We must prioritize table.primary_key from val if available.
+                    target_key = key
+                    if table.primary_key and val and isinstance(val, dict):
+                         pk_val = val.get(table.primary_key)
+                         if pk_val: target_key = pk_val
                     
                     # If local is dirty, it's a conflict. If clean, safe to delete.
                     if is_dirty:
-                        local_doc = await table.get(key)
+                        local_doc = await table.get(target_key)
                         conflict = Conflict(
                             table_name=table_name,
-                            key=key,
+                            key=target_key,
                             local_doc=local_doc,
                             remote_doc=tombstone, 
                             local_rev=_get_revision(local_doc) if local_doc else None,
                             remote_rev=remote_rev or "deleted"
                         )
-                        resolved = await self._resolve_conflict(conflict, table, key)
+                        resolved = await self._resolve_conflict(conflict, table, target_key)
                         if resolved:
                             conflicts_resolved += 1
                     else:
                         # Fast-Forward Delete
-                        await table.delete(key, silent=True)
+                        # Use update() to merge tombstone/deleted flag into existing record.
+                        # This preserves local data while marking as deleted.
+                        tombstone_req = val if val else {"_deleted": True}
+                        if not tombstone_req.get("_id"): tombstone_req["_id"] = target_key
+                        # Ensure we keep the revision if it was in the top-level doc wrapper or val
+                        if "_rev" in val_wrapper: tombstone_req["_rev"] = val_wrapper["_rev"]
+                        if "_deleted" not in tombstone_req: tombstone_req["_deleted"] = True
+
+                        await table.update(target_key, tombstone_req, silent=True)
                 else:
                     # Ensure remote document has revision
                     if val and isinstance(val, dict):
@@ -582,7 +625,7 @@ class SyncManager:
                                     # Optimistic assumption: index_name is the column name (common in metafor)
                                     if val and index_name in val:
                                         col_val = val[index_name]
-                                        rec = await table.where(index_name).equals(col_val).first()
+                                        rec = await table.where(index_name).equals(col_val).include_deleted().first()
                                         if rec:
                                             c_key = rec.get(table.primary_key) if table.primary_key else (rec.get("id") or rec.get("uuid") or rec.get("_id"))
                                             if c_key and c_key != key:
@@ -603,7 +646,7 @@ class SyncManager:
                                                  if key_path in val:
                                                      check_val = val[key_path]
                                                      # Check if a record exists with this unique value
-                                                     rec = await table.where(idx_name).equals(check_val).first()
+                                                     rec = await table.where(idx_name).equals(check_val).include_deleted().first()
                                                      if rec:
                                                           c_key = rec.get(table.primary_key) if table.primary_key else (rec.get("id") or rec.get("uuid") or rec.get("_id"))
                                                           if c_key and c_key != key:
@@ -616,7 +659,7 @@ class SyncManager:
                                 if conflicting_keys:
                                      # Resolve using Conflict Strategy
                                      for c_key in set(conflicting_keys):
-                                          conflict_rec = await table.get(c_key)
+                                          conflict_rec = await table.get(c_key, include_deleted=True)
                                           if not conflict_rec: continue 
 
                                           # Create Conflict Object
@@ -634,7 +677,11 @@ class SyncManager:
                                           
                                           if resolved_doc == val: # Remote Doc won (by object identity or content)
                                                console.log(f"SyncManager: Constraint Conflict Resolved (Remote Wins/LWW). Deleting local {c_key} to make way for {key}.")
-                                               await table.delete(c_key, silent=True)
+                                               # Use put() for tombstone
+                                               tombstone_c = {"_deleted": True, "_id": c_key}
+                                               if table.primary_key: tombstone_c[table.primary_key] = c_key
+                                               
+                                               await table.put(tombstone_c, key=c_key, silent=True)
                                                
                                                try:
                                                     await table.put(val, key=key, silent=True)
@@ -796,7 +843,8 @@ class SyncManager:
             # Apply resolved document
             if resolved_doc and resolved_doc.get("_deleted"):
                  # Resolved to delete
-                 await table.delete(key, silent=True)
+                 # Apply tombstone directly
+                 await table.put(resolved_doc, key=key, silent=True)
                  return True
             elif resolved_doc:
                  # Normal update
@@ -866,7 +914,7 @@ class SyncManager:
                     # Hydrate from DB
                     table = self.db.table(m["table"])
                     if table:
-                        current_val = await table.get(record_id)
+                        current_val = await table.get(record_id, include_deleted=True)
                         if current_val:
                             # Ensure revision is present
                             if "_rev" not in current_val:
@@ -885,6 +933,25 @@ class SyncManager:
                  ids = [m["id"] for m in mutations if m]
                  await self.queue.remove(ids)
                  return
+
+            # Check for Soft Deletes (Updates with _deleted=True)
+            # Transform them to 'delete' op for server compatibility, BUT keep the value.
+            for m in hydrated_mutations:
+                if m.get("op") in ("update", "put"):
+                    val = m.get("value")
+                    # Use duck typing instead of strict isinstance(dict) because val might be a JsProxy
+                    is_deleted = False
+                    try:
+                        if val and (val.get("_deleted") or val.get("deleted")):
+                            is_deleted = True
+                    except:
+                        pass
+                        
+                    if is_deleted:
+                        m["op"] = "delete"
+                        # Ensure base_rev is present for delete
+                        if "_rev" in val and "base_rev" not in m:
+                            m["base_rev"] = val["_rev"]
 
             payload = {
                 "mutations": hydrated_mutations,

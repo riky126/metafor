@@ -182,6 +182,10 @@ class Table:
         return self
 
     def _validate_item(self, item: Dict[str, Any]):
+        # Skip validation for tombstones (deleted records)
+        if item.get("_deleted") or item.get("deleted"):
+            return
+
         if self.schema:
             errors = self.schema.validate(item)
             if errors:
@@ -197,6 +201,11 @@ class Table:
     async def add(self, item: Dict[str, Any], key: Any = None, silent: bool = False, optimistic: bool = False):
         if not self.db._db_instance: 
             await self.db._ensure_open()
+
+        # Sanitize: Ensure new records are NOT marked as deleted
+        if isinstance(item, dict):
+            item.pop("_deleted", None)
+            item.pop("deleted", None)
             
         # Validate before any operation
         self._validate_item(item)
@@ -275,7 +284,7 @@ class Table:
                 await self._trigger_hook("on_update", {"value": item, "key": res, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
             return res
         
-    def get(self, key: Any):
+    def get(self, key: Any, include_deleted: bool = False):
         self._version() 
         
         async def _run():
@@ -283,10 +292,15 @@ class Table:
                  if key in self._overlay.mutations:
                      op = self._overlay.mutations[key]
                      if op['type'] == 'delete':
+                         return None if not include_deleted else op['value']
+                     
+                     val = op['value']
+                     # Soft Delete in Overlay
+                     if not include_deleted and val and (val.get("_deleted") or val.get("deleted")):
                          return None
-                     return op['value']
+                     return val
             
-            return await self.db.query_engine.get(self.name, key)
+            return await self.db.query_engine.get(self.name, key, include_deleted=include_deleted)
         return _run()
         
     async def delete(self, key: Any, silent: bool = False, optimistic: bool = False):
@@ -315,21 +329,33 @@ class Table:
              return
              
         # Capture base_rev for Tombstone
-        # old_item = await self.get(key) if key is not None else None # Already captured above
-        # base_rev = old_item.get("_rev") if old_item else None # Already captured above
+        # We need to fetch it to get _rev, and we need include_deleted=True in case 
+        # it was already deleted and we are updating the tombstone (e.g. updating _lastModified)
+        
+        item = await self.get(key, include_deleted=True)
+        
+        if item is None:
+             # It might be missing OR already deleted.
+             # We will proceed with a minimal tombstone. If there's a conflict, SyncManager handles it.
+             # But we need the primary key.
+             item = {}
+             if self.primary_key:
+                 item[self.primary_key] = key
+        
+        # RxDB Style: Strip fields to release unique constraints
+        # Keep PK, _rev, _id, uuid, id if present.
+        keys_to_keep = {"_rev", "_id", "uuid", "id", "_lastModified"}
+        if self.primary_key:
+            keys_to_keep.add(self.primary_key)
+            
+        tombstone = {k: v for k, v in item.items() if k in keys_to_keep}
+        tombstone["_deleted"] = True
+        
+        # Update using put (handles overlay, sync hooks (on_update), and versioning)
+        # on_update hook will fire, leading SyncManager to queue an UPDATE with _deleted=True.
+        await self.put(tombstone, key=key, silent=silent, optimistic=optimistic)
 
-        if self.strategy == Strategy.NETWORK_FIRST and not silent:
-             await self._trigger_hook("on_delete", {"key": key, "all": False, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
-             
-             res = await self.db.query_engine.delete(self.name, key)
-             self._set_version(self._version.peek() + 1)
-             return res
-        else:
-            res = await self.db.query_engine.delete(self.name, key)
-            self._set_version(self._version.peek() + 1)
-            if not silent:
-                await self._trigger_hook("on_delete", {"key": key, "all": False, "base_rev": base_rev, "base_doc": old_item, "optimistic": optimistic})
-            return res
+
         
     async def get_all_keys(self):
         return await self.db.query_engine.get_all_keys(self.name)
@@ -468,10 +494,17 @@ class Collection:
         self._offset = 0
         self._order_by = None
         self._reverse = False
+        self._order_by = None
+        self._reverse = False
         self._filter_fn = None
+        self._include_deleted = False
     
     def _add_condition(self, index, op, value):
         self._conditions.append({"index": index, "op": op, "value": value})
+
+    def include_deleted(self):
+        self._include_deleted = True
+        return self
 
     def or_(self, index: str):
         return WhereClause(self.table, index, collection=self)
