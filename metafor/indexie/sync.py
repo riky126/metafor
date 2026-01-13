@@ -577,15 +577,8 @@ class SyncManager:
                             conflicts_resolved += 1
                     else:
                         # Fast-Forward Delete
-                        # Use update() to merge tombstone/deleted flag into existing record.
-                        # This preserves local data while marking as deleted.
-                        tombstone_req = val if val else {"_deleted": True}
-                        if not tombstone_req.get("_id"): tombstone_req["_id"] = target_key
-                        # Ensure we keep the revision if it was in the top-level doc wrapper or val
-                        if "_rev" in val_wrapper: tombstone_req["_rev"] = val_wrapper["_rev"]
-                        if "_deleted" not in tombstone_req: tombstone_req["_deleted"] = True
-
-                        await table.update(target_key, tombstone_req, silent=True)
+                        # User Request: Hard delete instead of soft delete.
+                        await table.delete(target_key, silent=True)
                 else:
                     # Ensure remote document has revision
                     if val and isinstance(val, dict):
@@ -690,11 +683,8 @@ class SyncManager:
                                           
                                           if resolved_doc == val: # Remote Doc won (by object identity or content)
                                                console.log(f"SyncManager: Constraint Conflict Resolved (Remote Wins/LWW). Deleting local {c_key} to make way for {key}.")
-                                               # Use put() for tombstone
-                                               tombstone_c = {"_deleted": True, "_id": c_key}
-                                               if table.primary_key: tombstone_c[table.primary_key] = c_key
-                                               
-                                               await table.put(tombstone_c, key=c_key, silent=True)
+                                               # Use delete() instead of soft delete
+                                               await table.delete(c_key, silent=True)
                                                
                                                try:
                                                     await table.put(val, key=key, silent=True)
@@ -856,8 +846,8 @@ class SyncManager:
             # Apply resolved document
             if resolved_doc and resolved_doc.get("_deleted"):
                  # Resolved to delete
-                 # Apply tombstone directly
-                 await table.put(resolved_doc, key=key, silent=True)
+                 # User Request: Hard delete
+                 await table.delete(key, silent=True)
                  return True
             elif resolved_doc:
                  # Normal update
@@ -1026,7 +1016,7 @@ class SyncManager:
             for r in receipts:
                 if isinstance(r, dict):
                     # User instruction: "use the key attribute"
-                    if "key" in r: confirmed_keys.add(r["key"])
+                    if "key" in r: confirmed_keys.add(str(r["key"]))
                     if "id" in r: confirmed_ids.add(r["id"])
                     if "uuid" in r: confirmed_ids.add(r["uuid"])
             
@@ -1036,6 +1026,8 @@ class SyncManager:
             sent_mutation_ids = set(m["id"] for m in hydrated_mutations)
             
             for m in mutations:
+                if not m: continue
+
                 # 1. If we didn't send it (filtered out?), remove it from queue (local handling)
                 if m["id"] not in sent_mutation_ids:
                     ids_to_remove.append(m["id"])
@@ -1044,9 +1036,16 @@ class SyncManager:
                 # 2. If valid receipt received (matched by Key OR ID), remove from queue
                 # "for all receipt receive do a removal"
                 is_confirmed = False
-                if m.get("key") in confirmed_keys:
+                
+                # Robust Key Comparison
+                # 1. Check if Mutation ID matches the receipt 'key' (User Request)
+                if m["id"] in confirmed_keys:
                     is_confirmed = True
+                # 2. Check if Mutation ID matches the receipt 'id'/'uuid'
                 elif m["id"] in confirmed_ids:
+                    is_confirmed = True
+                # 3. Fallback: Check if Row Key matches receipt 'key' (Legacy/Alternative behavior)
+                elif m.get("key") is not None and str(m.get("key")) in confirmed_keys:
                     is_confirmed = True
                 
                 if is_confirmed:

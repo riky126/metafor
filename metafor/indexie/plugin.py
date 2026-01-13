@@ -321,6 +321,12 @@ class Table:
         if self._overlay.active:
              self._overlay.delete(key)
              if not silent and self._overlay.visible:
+                  # Trigger hook
+                  # Base Revision is still needed for sync correctnes, but we can fetch it lazily?
+                  # For now, if we want sync functionality to work, we might need it.
+                  # But optimizing: if silent=False, we assume we ARE syncing, so we fetch it?
+                  # Or does SyncManager handle that?
+                  # SyncManager is attached to on_delete. 
                   await self._trigger_hook("on_delete", {
                       "key": key, 
                       "all": False, 
@@ -330,32 +336,30 @@ class Table:
                   })
              return
              
-        # Capture base_rev for Tombstone
-        # We need to fetch it to get _rev, and we need include_deleted=True in case 
-        # it was already deleted and we are updating the tombstone (e.g. updating _lastModified)
+        # Capture base_rev for Sync (if not silent)
+        # We assume if silent=True, we don't need to notify sync manager (e.g. initial load or internal cleanups)
+        # But for USER calls, silent=False.
         
-        item = await self.get(key, include_deleted=True)
+        if not silent:
+             item = await self.get(key, include_deleted=True)
+             if item:
+                 base_rev = item.get("_rev")
+                 old_item = item
         
-        if item is None:
-             # It might be missing OR already deleted.
-             # We will proceed with a minimal tombstone. If there's a conflict, SyncManager handles it.
-             # But we need the primary key.
-             item = {}
-             if self.primary_key:
-                 item[self.primary_key] = key
+        # Perform Hard Delete in DB
+        # User Request: "just call delete(key)"
+        # We rely on hooks to notify SyncManager to queue a deletion mutation if needed.
+        await self.db.query_engine.delete(self.name, key)
+        self._set_version(self._version.peek() + 1)
         
-        # RxDB Style: Strip fields to release unique constraints
-        # Keep PK, _rev, _id, uuid, id if present.
-        keys_to_keep = {"_rev", "_id", "uuid", "id", "_lastModified"}
-        if self.primary_key:
-            keys_to_keep.add(self.primary_key)
-            
-        tombstone = {k: v for k, v in item.items() if k in keys_to_keep}
-        tombstone["_deleted"] = True
-        
-        # Update using put (handles overlay, sync hooks (on_update), and versioning)
-        # on_update hook will fire, leading SyncManager to queue an UPDATE with _deleted=True.
-        await self.put(tombstone, key=key, silent=silent, optimistic=optimistic)
+        if not silent:
+             await self._trigger_hook("on_delete", {
+                  "key": key, 
+                  "all": False, 
+                  "base_rev": base_rev, 
+                  "base_doc": old_item,
+                  "optimistic": optimistic
+             })
 
 
         
