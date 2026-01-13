@@ -229,6 +229,8 @@ class Table:
         if not self.db._db_instance: 
             await self.db._ensure_open()
 
+
+
         # Validate before any operation
         self._validate_item(item)
 

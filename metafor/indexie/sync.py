@@ -122,6 +122,7 @@ class OfflineQueue:
         mutation = {
             "id": str(uuid.uuid4()),
             "table": table_name,
+            "key": key,
             "op": op,
             "value": stored_value,
             "timestamp": time.time() * 1000,
@@ -377,6 +378,7 @@ class SyncManager:
             mutation = {
                 "id": str(uuid.uuid4()),
                 "table": table_name,
+                "key": key,
                 "op": "put" if event_type == "add" else ("update" if event_type == "update" else "delete"),
                 # For put/add, value is the full document. 
                 # For delete, use the user-requested {delete_id: key} format.
@@ -531,8 +533,15 @@ class SyncManager:
                      
                 table = self.db.table(table_name)
                 if not table: continue
+
+                # KEY CORRECTION LOGIC (Unified for both Deleted and Alive)
+                # Ensure we use the actual record ID (from primary key) as the target key.
+                target_key = key
+                if table.primary_key and val and isinstance(val, dict):
+                     pk_val = val.get(table.primary_key)
+                     if pk_val: target_key = pk_val
                 
-                is_dirty = (table_name, key) in pending_keys
+                is_dirty = (table_name, target_key) in pending_keys
                 
                 if _deleted:
                     # Create Tombstone for remote_doc to allow LWW comparison
@@ -580,6 +589,10 @@ class SyncManager:
                 else:
                     # Ensure remote document has revision
                     if val and isinstance(val, dict):
+                        # Sanitize: If this is an ALIVE record (else block), it must not contain _deleted
+                        val.pop("_deleted", None)
+                        val.pop("deleted", None)
+
                         if not remote_rev:
                             remote_rev = _set_revision(val)
                         else:
@@ -587,29 +600,29 @@ class SyncManager:
                     
                     if is_dirty:
                         # Conflict!
-                        local_doc = await table.get(key)
+                        local_doc = await table.get(target_key)
                         local_rev = _get_revision(local_doc) if local_doc else None
                         
                         conflict = Conflict(
                             table_name=table_name,
-                            key=key,
+                            key=target_key,
                             local_doc=local_doc,
                             remote_doc=val,
                             local_rev=local_rev,
                             remote_rev=remote_rev
                         )
-                        resolved = await self._resolve_conflict(conflict, table, key)
+                        resolved = await self._resolve_conflict(conflict, table, target_key)
                         if resolved:
                             conflicts_resolved += 1
                     else:
                         # Fast-Forward Update
                         try:
-                            await table.put(val, key=key, silent=True)
+                            await table.put(val, key=target_key, silent=True)
                         except Exception as e:
                             # Handle Unique Constraint Violation (ConstraintError)
                             err_msg = str(e)
                             if "ConstraintError" in err_msg:
-                                console.warn(f"SyncManager: ConstraintError for {table_name}:{key}. Attempting to resolve via Conflict Strategy.")
+                                console.warn(f"SyncManager: ConstraintError for {table_name}:{target_key}. Attempting to resolve via Conflict Strategy.")
                                 
                                 # Strategy: Resolve conflict by checking Strategy (Server Wins, Local Wins, etc)
                                 
@@ -628,7 +641,7 @@ class SyncManager:
                                         rec = await table.where(index_name).equals(col_val).include_deleted().first()
                                         if rec:
                                             c_key = rec.get(table.primary_key) if table.primary_key else (rec.get("id") or rec.get("uuid") or rec.get("_id"))
-                                            if c_key and c_key != key:
+                                            if c_key and c_key != target_key:
                                                  conflicting_keys.append(c_key)
                                 
                                 if not conflicting_keys:
@@ -1005,26 +1018,43 @@ class SyncManager:
                     return
             
             receipts = data.get("sync_receipts", [])
+            
+            # Identifiers explicitly confirmed by the server
             confirmed_keys = set()
+            confirmed_ids = set()
+            
             for r in receipts:
-                if isinstance(r, dict) and "key" in r:
-                    confirmed_keys.add(r["key"])
-
-            # Remove processed items
-            # 1. Skipped items (not in hydrated_mutations) are always removed (locally handled)
-            # 2. Sent items are removed ONLY if confirmed by server
-            sent_mutation_ids = set(m["id"] for m in hydrated_mutations)
+                if isinstance(r, dict):
+                    # User instruction: "use the key attribute"
+                    if "key" in r: confirmed_keys.add(r["key"])
+                    if "id" in r: confirmed_ids.add(r["id"])
+                    if "uuid" in r: confirmed_ids.add(r["uuid"])
+            
+            # Determine which queue items to remove
             ids_to_remove = []
             
+            sent_mutation_ids = set(m["id"] for m in hydrated_mutations)
+            
             for m in mutations:
+                # 1. If we didn't send it (filtered out?), remove it from queue (local handling)
                 if m["id"] not in sent_mutation_ids:
                     ids_to_remove.append(m["id"])
-                elif m["id"] in confirmed_keys:
+                    continue
+                
+                # 2. If valid receipt received (matched by Key OR ID), remove from queue
+                # "for all receipt receive do a removal"
+                is_confirmed = False
+                if m.get("key") in confirmed_keys:
+                    is_confirmed = True
+                elif m["id"] in confirmed_ids:
+                    is_confirmed = True
+                
+                if is_confirmed:
                     ids_to_remove.append(m["id"])
             
             if ids_to_remove:
                 await self.queue.remove(ids_to_remove)
-                console.log(f"SyncManager: Pushed and confirmed {len(ids_to_remove)} mutations")
+                console.log(f"SyncManager: Pushed and removed {len(ids_to_remove)} mutations")
             
             self._set_reachable(True) # Success
 
