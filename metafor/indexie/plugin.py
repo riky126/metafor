@@ -370,6 +370,10 @@ class Table:
              if self.primary_key:
                  tombstone[self.primary_key] = key
         else:
+            # Idempotency Check: If already deleted, do nothing
+            if old_item.get("_deleted") or old_item.get("deleted"):
+                return
+
             # RxDB Style: Strip fields to release unique constraints
             # Keep PK, _rev, _id, uuid, id if present.
             keys_to_keep = {"_rev", "_id", "uuid", "id", "_lastModified"}

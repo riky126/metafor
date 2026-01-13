@@ -88,10 +88,14 @@ class OfflineQueue:
                  "ref_row": key
              }
         elif op == "delete":
-             # Ensure delete_id is available in the value field for all sync hooks
-             stored_value = {
-                 "delete_id": key
-             }
+             # Identify if we have a tombstone (value) or just an ID
+             if value and isinstance(value, dict):
+                 stored_value = value
+                 stored_value["delete_id"] = key # Ensure delete_id is present for consumers
+             else:
+                 stored_value = {
+                     "delete_id": key
+                 }
         
         # Check for existing pending mutation for this key (Coalescing)
         # Note: We look for the record ID inside value.ref_row since top-level 'key' is removed.
@@ -184,6 +188,7 @@ class SyncManager:
                  pull_enabled: bool = True, conflict_handler: Optional[Callable] = None,
                  conflict_strategy: str = ConflictStrategy.LAST_WRITE_WINS,
                  push_path: str = "/push", pull_path: str = "/pull",
+                 poll_timeout: int = 60,
                  http_client: Optional[Any] = None):
         self.db = db
         self.upstream_url = upstream_url.rstrip('/')
@@ -193,6 +198,7 @@ class SyncManager:
         self.conflict_strategy = conflict_strategy
         self.push_path = push_path
         self.pull_path = pull_path
+        self.poll_timeout = poll_timeout
         self.http_client = http_client
         
         self.hook = HookRegistrar()
@@ -205,6 +211,7 @@ class SyncManager:
         # Let's start True if assume Online, but maybe better to ping on start.
         
         self._sync_task = None
+        self._push_event = asyncio.Event()
         self._running = False
 
     @property
@@ -259,6 +266,48 @@ class SyncManager:
             self._set_reachable(False, error=str(e))
             return False
 
+    async def _process_loop(self):
+        # Deprecated: Split into _push_loop and _pull_loop
+        pass
+
+    async def _push_loop(self):
+        while self._running:
+            if self._is_online:
+                # If we think we are online but server marked unreachable, try to ping
+                if not self._server_reachable:
+                    await self.check_connection()
+                
+                # If confirmed reachable (or optimistically true), proceed
+                if self._server_reachable:
+                    await self._push()
+            
+            # Wait for interval OR event (debounce built-in by nature of loop processing)
+            try:
+                await asyncio.wait_for(self._push_event.wait(), timeout=self.push_interval / 1000)
+                self._push_event.clear()
+            except asyncio.TimeoutError:
+                pass # Interval elapsed
+
+    async def _pull_loop(self):
+        while self._running:
+            if self._is_online and self._server_reachable and self.pull_enabled:
+                 # Long Polling: 
+                 # We call _pull with long_poll=True.
+                 # The server should hold the connection until data is available or timeout.
+                 # If it returns successfully (with or without data), we pull again immediately (or small yield).
+                 try:
+                     await self._pull()
+                     # Valid response (even empty), imply immediate retry for long-polling
+                     # Small yield to let other tasks run
+                     await asyncio.sleep(0.01) 
+                 except Exception as e:
+                     # Error (Network, 500, etc) -> Backoff
+                     console.warn(f"SyncManager: Pull loop error: {e}. Backing off.")
+                     await asyncio.sleep(5) 
+            else:
+                 # Offline or unrelated -> sleep normally
+                 await asyncio.sleep(self.push_interval / 1000)
+                 
     def start(self):
         self._running = True
         
@@ -268,35 +317,20 @@ class SyncManager:
         # Start Hooks
         self._attach_hooks()
         
-        # Start Loop
-        self._sync_task = asyncio.create_task(self._process_loop())
-        console.log("SyncManager: Started")
+        # Start Loops
+        self._sync_task = asyncio.create_task(self._push_loop())
+        self._pull_task = asyncio.create_task(self._pull_loop())
+        
+        console.log("SyncManager: Started (Push + Long Poll Pull)")
         
         self._trigger_task = None
-
-    def _trigger_push(self):
-        """Schedule an immediate push (debounced)."""
-        if not self._is_online or not self._server_reachable: return
-        
-        async def _run_push():
-            await asyncio.sleep(0.5) # 500ms debounce
-            await self._push()
-            self._trigger_task = None
-            
-        if self._trigger_task:
-            self._trigger_task.cancel()
-            
-        # We need a running loop
-        try:
-             loop = asyncio.get_event_loop()
-             if loop.is_running():
-                 self._trigger_task = loop.create_task(_run_push())
-        except: pass
 
     def stop(self):
         self._running = False
         if self._sync_task:
             self._sync_task.cancel()
+        if hasattr(self, "_pull_task") and self._pull_task:
+            self._pull_task.cancel()
 
     def _setup_network_listeners(self):
         def on_online(e):
@@ -401,6 +435,11 @@ class SyncManager:
             return
 
         # Automatic Sync Path (Existing logic)
+        # Check for soft delete in payload (from Table.delete soft path)
+        is_soft_delete = False
+        if item and (item.get("_deleted") or item.get("deleted")):
+             is_soft_delete = True
+        
         if event_type == "add":
             if item:
                 _ensure_revision(item)
@@ -408,26 +447,16 @@ class SyncManager:
         elif event_type == "update":
             if item:
                 _ensure_revision(item)
-            await self.queue.enqueue(table_name, "update", key, item, base_rev=base_rev, base_doc=base_doc)
+            
+            if is_soft_delete:
+                 # Override to "delete" per user request, but pass the Item (Tombstone)
+                 await self.queue.enqueue(table_name, "delete", key, item, base_rev=base_rev, base_doc=base_doc)
+            else:
+                 await self.queue.enqueue(table_name, "update", key, item, base_rev=base_rev, base_doc=base_doc)
         else:
-            await self.queue.enqueue(table_name, "delete", key, base_rev=base_rev, base_doc=base_doc)
+            await self.queue.enqueue(table_name, "delete", key, item, base_rev=base_rev, base_doc=base_doc)
             
-        self._trigger_push()
-
-    async def _process_loop(self):
-        while self._running:
-            if self._is_online:
-                # If we think we are online but server marked unreachable, try to ping
-                if not self._server_reachable:
-                    await self.check_connection()
-                
-                # If confirmed reachable (or optimistically true), proceed
-                if self._server_reachable:
-                    await self._push()
-                    if self.pull_enabled:
-                        await self._pull()
-            
-            await asyncio.sleep(self.push_interval / 1000)
+        self._push_event.set()
 
     async def _pull(self):
         try:
@@ -438,9 +467,15 @@ class SyncManager:
             if cursor:
                 url += f"?checkpoint={cursor}"
                 
+            headers = {
+                "x-long-poll": "True",
+                "x-long-poll-timeout": str(self.poll_timeout)
+            }
+
             if self.http_client:
                  try:
-                     resp_dict = await self.http_client.get(url)
+                     # Assuming http_client.get accepts headers
+                     resp_dict = await self.http_client.get(url, headers=headers)
                  except Exception as inner_e:
                      console.error(f"SyncManager: http_client.get failed: {inner_e!r}")
                      raise inner_e
@@ -460,7 +495,8 @@ class SyncManager:
                 
                 pull_options = {
                     "method": "GET",
-                    "credentials": "include"
+                    "credentials": "include",
+                    "headers": headers
                 }
                 resp = await fetch(url, _to_js_obj(pull_options))
                 

@@ -32,6 +32,7 @@ class Indexie:
                     conflict_handler: Optional[Callable] = None,
                     conflict_strategy: str = SyncManager.ConflictStrategy.LAST_WRITE_WINS,
                     push_path: str = "/push", pull_path: str = "/pull",
+                    poll_timeout: int = 30,
                     http_client: Optional[Any] = None):
         """
         Enable synchronization with conflict resolution.
@@ -48,6 +49,7 @@ class Indexie:
                 - "custom": Use conflict_handler function
             push_path: Custom push endpoint path (default: /push)
             pull_path: Custom pull endpoint path (default: /pull)
+            poll_timeout: Long polling timeout in seconds (default: 60)
             http_client: Optional HTTP client instance (e.g. metafor.http.Http)
         """
         from .sync import SyncManager, OfflineQueue, ReplicationState, ConflictHistory
@@ -59,6 +61,7 @@ class Indexie:
             conflict_strategy=conflict_strategy,
             push_path=push_path,
             pull_path=pull_path,
+            poll_timeout=poll_timeout,
             http_client=http_client
         )
         

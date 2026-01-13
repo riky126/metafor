@@ -13,7 +13,8 @@ db.version(2).stores({
 
 db.enable_sync(
     upstream_url="http://localhost:8000/sync", 
-    pull_enabled=True, 
+    pull_enabled=True,
+    poll_timeout=30,
     http_client=http_client
 )
 
