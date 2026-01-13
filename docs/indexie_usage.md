@@ -342,6 +342,37 @@ When syncing, Indexie automatically handles sync cursors and persistence for you
 2.  **Auto-Resume**: On app reload or re-connection, Indexie reads this stored cursor and automatically appends it to the request (e.g., `?checkpoint=<cursor>`).
 3.  **No Manual Work**: You do not need to manually track offsets. Just ensure your backend respects the `checkpoint` parameter.
 
+#### Implementing Server-Side Checkpointing
+
+To support the sync protocol, your backend API's pull endpoint (e.g., `GET /pull`) must filter records based on the `checkpoint` query parameter.
+
+The `checkpoint` is typically a timestamp (integer milliseconds) representing the last time the client successfully synced.
+
+**Server Logic Example (Pseudo-SQL):**
+
+```sql
+-- "checkpoint" comes from query param ?checkpoint=1234567890
+-- If checkpoint is missing, return ALL records (initial sync)
+
+SELECT * FROM users
+WHERE 
+  -- Only return records modified SINCE the checkpoint
+  _lastModified > :checkpoint 
+
+ORDER BY _lastModified ASC
+```
+
+**Response Format:**
+
+Your server must return the new checkpoint (the latest timestamp of the returned records) so the client can store it for next time.
+
+```json
+{
+  "documents": [ ... ],
+  "checkpoint": 1715000000123  // Max(_lastModified) of valid records
+}
+```
+
 #### Server Requirements: System Fields
 
 For sync to function correctly, your backend **must** persist and return the following system fields in the pull/sync response:

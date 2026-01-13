@@ -190,10 +190,14 @@ class SyncManager:
                  push_path: str = "/push", pull_path: str = "/pull",
                  poll_timeout: int = 60,
                  chunk_size: int = -1,
+                 debounce_interval: int = 1000,
                  http_client: Optional[Any] = None):
         self.db = db
         self.upstream_url = upstream_url.rstrip('/')
         self.push_interval = push_interval
+        self.push_path = push_path
+        self.push_path = push_path
+        self.debounce_interval = debounce_interval
         self.pull_enabled = pull_enabled
         self.conflict_handler = conflict_handler
         self.conflict_strategy = conflict_strategy
@@ -283,12 +287,34 @@ class SyncManager:
                 if self._server_reachable:
                     await self._push()
             
-            # Wait for interval OR event (debounce built-in by nature of loop processing)
+            # Wait for interval OR event
             try:
+                # Wait for the first trigger
                 await asyncio.wait_for(self._push_event.wait(), timeout=self.push_interval / 1000)
+                
+                # Debounce Logic: 
+                # Once triggered, wait for 'debounce_interval'. 
+                # If triggered again during this wait, we "restart" the wait (up to a limit if desired, but simple debounce for now).
+                # Actually, standard debounce means: Wait valid time AFTER last event.
+                # Implementation:
+                # 1. Clear event immediately.
+                # 2. Enter debounce loop.
                 self._push_event.clear()
+                
+                debounce_sec = self.debounce_interval / 1000.0
+                while True:
+                    try:
+                        # Wait for potentially MORE events
+                        await asyncio.wait_for(self._push_event.wait(), timeout=debounce_sec)
+                        self._push_event.clear() # Reset and loop (timer restart)
+                        # Optional: Add max_wait check here to force push eventually
+                    except asyncio.TimeoutError:
+                        # Implementation detail: Timeout means NO new events for debounce_sec.
+                        # Stabilization achieved!
+                        break
+                        
             except asyncio.TimeoutError:
-                pass # Interval elapsed
+                pass # Interval elapsed (Periodic sync)
 
     async def _pull_loop(self):
         while self._running:

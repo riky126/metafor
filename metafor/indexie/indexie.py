@@ -34,6 +34,7 @@ class Indexie:
                     push_path: str = "/push", pull_path: str = "/pull",
                     poll_timeout: int = 30,
                     chunk_size: int = -1,
+                    debounce_interval: int = 1000,
                     http_client: Optional[Any] = None):
         """
         Enable synchronization with conflict resolution.
@@ -65,6 +66,7 @@ class Indexie:
             pull_path=pull_path,
             poll_timeout=poll_timeout,
             chunk_size=chunk_size,
+            debounce_interval=debounce_interval,
             http_client=http_client
         )
         
