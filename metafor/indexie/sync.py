@@ -298,7 +298,6 @@ class SyncManager:
                 
                 # 1. Clear event immediately.
                 self._push_event.clear()
-                console.log(f"SyncManager: Local change detected. Debouncing for {self.debounce_interval}ms...")
                 
                 debounce_sec = self.debounce_interval / 500.0
                 while True:
@@ -306,11 +305,9 @@ class SyncManager:
                         # Wait for potentially MORE events
                         await asyncio.wait_for(self._push_event.wait(), timeout=debounce_sec)
                         self._push_event.clear() # Reset and loop (timer restart)
-                        console.log(f"SyncManager: Activity detected during debounce. Resetting timer ({self.debounce_interval}ms).")
                     except asyncio.TimeoutError:
                         # Implementation detail: Timeout means NO new events for debounce_sec.
                         # Stabilization achieved!
-                        console.log("SyncManager: Debounce stabilized. Pushing changes...")
                         break
                         
             except asyncio.TimeoutError:
