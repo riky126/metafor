@@ -150,7 +150,7 @@ class OfflineQueue:
     async def remove(self, ids: List[str]):
         # Batch delete
         for mid in ids:
-            await self.table.delete(mid)
+            await self.table.delete(mid, hard=True)
 
     async def count(self) -> int:
         return await self.table.count()
