@@ -33,6 +33,7 @@ class Indexie:
                     conflict_strategy: str = SyncManager.ConflictStrategy.LAST_WRITE_WINS,
                     push_path: str = "/push", pull_path: str = "/pull",
                     poll_timeout: int = 30,
+                    chunk_size: int = -1,
                     http_client: Optional[Any] = None):
         """
         Enable synchronization with conflict resolution.
@@ -50,6 +51,7 @@ class Indexie:
             push_path: Custom push endpoint path (default: /push)
             pull_path: Custom pull endpoint path (default: /pull)
             poll_timeout: Long polling timeout in seconds (default: 60)
+            chunk_size: Limit number of documents per pull (default: -1, unlimited)
             http_client: Optional HTTP client instance (e.g. metafor.http.Http)
         """
         from .sync import SyncManager, OfflineQueue, ReplicationState, ConflictHistory
@@ -62,6 +64,7 @@ class Indexie:
             push_path=push_path,
             pull_path=pull_path,
             poll_timeout=poll_timeout,
+            chunk_size=chunk_size,
             http_client=http_client
         )
         

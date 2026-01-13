@@ -189,6 +189,7 @@ class SyncManager:
                  conflict_strategy: str = ConflictStrategy.LAST_WRITE_WINS,
                  push_path: str = "/push", pull_path: str = "/pull",
                  poll_timeout: int = 60,
+                 chunk_size: int = -1,
                  http_client: Optional[Any] = None):
         self.db = db
         self.upstream_url = upstream_url.rstrip('/')
@@ -199,6 +200,7 @@ class SyncManager:
         self.push_path = push_path
         self.pull_path = pull_path
         self.poll_timeout = poll_timeout
+        self.chunk_size = chunk_size
         self.http_client = http_client
         
         self.hook = HookRegistrar()
@@ -464,8 +466,14 @@ class SyncManager:
             
             # Construct URL
             url = f"{self.upstream_url}{self.pull_path}"
+            params = []
             if cursor:
-                url += f"?checkpoint={cursor}"
+                params.append(f"checkpoint={cursor}")
+            if self.chunk_size != -1:
+                params.append(f"chunk_limit={self.chunk_size}")
+            
+            if params:
+                url += "?" + "&".join(params)
                 
             headers = {
                 "x-long-poll": "True",

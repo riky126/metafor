@@ -363,30 +363,46 @@ class Table:
         # --- Soft Delete Mode (Default) ---
         
         if old_item is None:
-             # It might be missing OR already deleted.
-             # We will proceed with a minimal tombstone. If there's a conflict, SyncManager handles it.
-             # But we need the primary key.
-             tombstone = {}
+             # Non-existent item: Check if we need to support "Delete by ID" (Blind Delete)
+             # To support syncing deletions of items we don't have locally (e.g. lost state), 
+             # we create a minimal tombstone.
+             tombstone = {"_deleted": True}
              if self.primary_key:
                  tombstone[self.primary_key] = key
         else:
-            # Idempotency Check: If already deleted, do nothing
-            if old_item.get("_deleted") or old_item.get("deleted"):
-                return
+             # Idempotency Check
+             if old_item.get("_deleted") or old_item.get("deleted"):
+                 return
 
-            # RxDB Style: Strip fields to release unique constraints
-            # Keep PK, _rev, _id, uuid, id if present.
-            keys_to_keep = {"_rev", "_id", "uuid", "id", "_lastModified"}
-            if self.primary_key:
-                keys_to_keep.add(self.primary_key)
+            # Strip fields to release constraints (RxDB Style)
+             keys_to_keep = {"_rev", "_id", "uuid", "id", "_lastModified"}
+             if self.primary_key:
+                 keys_to_keep.add(self.primary_key)
                 
-            tombstone = {k: v for k, v in old_item.items() if k in keys_to_keep}
+             tombstone = {k: v for k, v in old_item.items() if k in keys_to_keep}
+             tombstone["_deleted"] = True
+
+        # Optimized Write: Bypass self.put() to avoid double-read of old_item
+        # We manually handle revisioning and hooks here.
         
-        tombstone["_deleted"] = True
-        
-        # Update using put (handles overlay, sync hooks (on_update), and versioning)
-        # on_update hook will fire, leading SyncManager to queue an UPDATE with _deleted=True.
-        await self.put(tombstone, key=key, silent=silent, optimistic=optimistic)
+        if not silent:
+            from .support import _set_revision
+            _set_revision(tombstone, parent_rev=base_rev)
+
+        # Write directly to QueryEngine
+        res = await self.db.query_engine.put(self.name, tombstone, key)
+        self._set_version(self._version.peek() + 1)
+
+        if not silent:
+            # Trigger 'on_update' because soft-delete is technically an update.
+            # SyncManager listens to this and queues it as "delete" op (with full tombstone payload).
+            await self._trigger_hook("on_update", {
+                "value": tombstone, 
+                "key": key, 
+                "base_rev": base_rev, 
+                "base_doc": old_item, 
+                "optimistic": optimistic
+            })
 
 
         
