@@ -112,16 +112,29 @@ class OverlayLayer:
                  if op["type"] == "add":
                      # No longer stripping temp keys; UUIDs are permanent
                      val = op["value"]
-                     # Use silent=True because hooks were already triggered during the overlay phase.
-                     # This prevents a second round of 'on_add' calls during commit.
-                     await self.table.add(val, silent=True)
+                     # Use silent=self.visible because if visible=True (optimistic), hooks triggered in overlay.
+                     # If visible=False, hooks were NOT triggered, so we must trigger them now (silent=False).
+                     # We force optimistic=True so that SyncManager treats this as an optimistic sync (skips queue, enriches payload)
+                     await self.table.add(val, silent=self.visible, optimistic=True)
 
                  elif op["type"] == "put":
                      # No longer stripping temp keys
-                     await self.table.put(op["value"], key=key, silent=True)
+                     await self.table.put(op["value"], key=key, silent=self.visible, optimistic=True)
                          
                  elif op["type"] == "delete":
-                     await self.table.delete(key, silent=True)
+                     # To match optimistic behavior (which triggers "on_delete"), we must manually trigger it
+                     # and suppress the default "on_update" (soft delete) from Table.delete.
+                     # We force optimistic=True here as well for consistency.
+                     await self.table.delete(key, silent=True, optimistic=True)
+                     
+                     if not self.visible:
+                          await self.table._trigger_hook("on_delete", {
+                              "key": key,
+                              "all": False,
+                              "base_rev": None,
+                              "base_doc": None,
+                              "optimistic": True
+                          })
              
              self.mutations.clear()
         except Exception as e:
