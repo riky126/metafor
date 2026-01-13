@@ -72,8 +72,8 @@ class OverlayLayer:
             if self.table.primary_key in item:
                 key = item[self.table.primary_key]
             else:
-                import random
-                key = -random.randint(1, 1000000)
+                import uuid
+                key = str(uuid.uuid4())
                 item[self.table.primary_key] = key
         
         self.mutations[key] = {"type": "add", "value": item}
@@ -85,8 +85,8 @@ class OverlayLayer:
     def put(self, item: Dict[str, Any], key: Any = None):
         pk = key or item.get(self.table.primary_key)
         if not pk:
-             import random
-             pk = -random.randint(1, 1000000)
+             import uuid
+             pk = str(uuid.uuid4())
              item[self.table.primary_key] = pk
              
         self.mutations[pk] = {"type": "put", "value": item}
@@ -110,24 +110,15 @@ class OverlayLayer:
              for key in keys:
                  op = self.mutations[key]
                  if op["type"] == "add":
-                     is_temp_key = isinstance(key, int) and key < 0
-                     val = op["value"].copy()
-                     if is_temp_key and self.table.primary_key in val:
-                         del val[self.table.primary_key]
+                     # No longer stripping temp keys; UUIDs are permanent
+                     val = op["value"]
                      # Use silent=True because hooks were already triggered during the overlay phase.
                      # This prevents a second round of 'on_add' calls during commit.
                      await self.table.add(val, silent=True)
 
                  elif op["type"] == "put":
-                     is_temp_key = isinstance(key, int) and key < 0
-                     
-                     if is_temp_key and self.table.primary_key:
-                         val = op["value"].copy()
-                         if self.table.primary_key in val:
-                             del val[self.table.primary_key]
-                         await self.table.put(val, silent=True)
-                     else:
-                         await self.table.put(op["value"], key=key, silent=True)
+                     # No longer stripping temp keys
+                     await self.table.put(op["value"], key=key, silent=True)
                          
                  elif op["type"] == "delete":
                      await self.table.delete(key, silent=True)

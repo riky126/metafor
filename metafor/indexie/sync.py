@@ -1021,35 +1021,21 @@ class SyncManager:
                     if "uuid" in r: confirmed_ids.add(r["uuid"])
             
             # Determine which queue items to remove
-            ids_to_remove = []
+            # Optimized logic:
+            # 1. Remove if not sent (filtered out locally)
+            # 2. Remove if confirmed by server (Mutation            # Determine which queue items to remove
             
             sent_mutation_ids = set(m["id"] for m in hydrated_mutations)
+            all_confirmed = confirmed_keys | confirmed_ids
             
-            for m in mutations:
-                if not m: continue
-
-                # 1. If we didn't send it (filtered out?), remove it from queue (local handling)
-                if m["id"] not in sent_mutation_ids:
-                    ids_to_remove.append(m["id"])
-                    continue
-                
-                # 2. If valid receipt received (matched by Key OR ID), remove from queue
-                # "for all receipt receive do a removal"
-                is_confirmed = False
-                
-                # Robust Key Comparison
-                # 1. Check if Mutation ID matches the receipt 'key' (User Request)
-                if m["id"] in confirmed_keys:
-                    is_confirmed = True
-                # 2. Check if Mutation ID matches the receipt 'id'/'uuid'
-                elif m["id"] in confirmed_ids:
-                    is_confirmed = True
-                # 3. Fallback: Check if Row Key matches receipt 'key' (Legacy/Alternative behavior)
-                elif m.get("key") is not None and str(m.get("key")) in confirmed_keys:
-                    is_confirmed = True
-                
-                if is_confirmed:
-                    ids_to_remove.append(m["id"])
+            ids_to_remove = [
+                m["id"] for m in mutations
+                if m and (
+                    m["id"] not in sent_mutation_ids or
+                    m["id"] in all_confirmed or
+                    (m.get("key") is not None and str(m.get("key")) in confirmed_keys)
+                )
+            ]
             
             if ids_to_remove:
                 await self.queue.remove(ids_to_remove)
