@@ -325,7 +325,13 @@ class SyncManager:
                      await self._pull()
                      # Valid response (even empty), imply immediate retry for long-polling
                      # Small yield to let other tasks run
-                     await asyncio.sleep(0.01) 
+                     
+                     # If poll_timeout is 0, we effectively have short polling.
+                     # To avoid a busy loop (spamming server), we force a 5s delay (5000ms).
+                     if self.poll_timeout <= 0:
+                         await asyncio.sleep(5)
+                     else:
+                         await asyncio.sleep(0.1) 
                  except Exception as e:
                      # Error (Network, 500, etc) -> Backoff
                      console.warn(f"SyncManager: Pull loop error: {e}. Backing off.")
