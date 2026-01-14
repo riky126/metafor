@@ -47,6 +47,7 @@ class Indexie:
                 - poll_timeout: Long polling timeout in seconds (default: 60)
                 - chunk_size: Limit number of documents per pull (default: -1, unlimited)
                 - debounce_interval: Debounce interval in ms (default: 200)
+                - list_id_keys: List of custom ID keys for smart list merging (default: None)
             http_client: Optional HTTP client instance
         """
         from .sync import SyncManager, OfflineQueue, ReplicationState, ConflictHistory
@@ -64,6 +65,7 @@ class Indexie:
             poll_timeout=opts.get("poll_timeout", 30),
             chunk_size=opts.get("chunk_size", -1),
             debounce_interval=opts.get("debounce_interval", 200),
+            list_id_keys=opts.get("list_id_keys"),
             http_client=http_client
         )
         

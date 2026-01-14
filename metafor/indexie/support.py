@@ -53,7 +53,7 @@ def _to_js_obj(data):
 
 # --- Deep Merge Utility ---
 
-def deep_merge(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
+def deep_merge(target: Dict[str, Any], source: Dict[str, Any], list_id_keys: [] = None) -> Dict[str, Any]:
     """
     Recursively merges source into target.
     - Dicts are merged recursively.
@@ -67,7 +67,75 @@ def deep_merge(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]
     result = target.copy()
     for k, v in source.items():
         if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-            result[k] = deep_merge(result[k], v)
+            # Pass custom keys down recursively
+            result[k] = deep_merge(result[k], v, list_id_keys=list_id_keys)
+        elif k in result and isinstance(result[k], list) and isinstance(v, list):
+            # Smart List Merge
+            # Check if lists contain dictionaries with a common ID field
+            target_list = result[k]
+            source_list = v
+            
+            can_smart_merge = False
+            id_key = None
+            
+            # Potential ID keys to check (in order of preference)
+            potential_keys = list_id_keys if list_id_keys else ['id', '_id', 'uuid', 'uid', 'pk']
+            
+            # 1. Determine the ID key from the first available item
+            sample_item = None
+            if target_list: sample_item = target_list[0]
+            elif source_list: sample_item = source_list[0]
+            
+            if sample_item and isinstance(sample_item, dict):
+                for pk in potential_keys:
+                    if pk in sample_item:
+                        id_key = pk
+                        break
+            
+            # 2. Verify all items in both lists have this key
+            if id_key:
+                can_smart_merge = True
+                for item in target_list + source_list:
+                    if not isinstance(item, dict) or id_key not in item:
+                        can_smart_merge = False
+                        break
+            
+            if can_smart_merge:
+                # 1. Map target items by ID
+                merged_map = {item[id_key]: item for item in target_list}
+                
+                # 2. Merge source items
+                for item in source_list:
+                    item_id = item[id_key]
+                    if item_id in merged_map:
+                        # Recursively merge the items
+                        merged_map[item_id] = deep_merge(merged_map[item_id], item, list_id_keys=list_id_keys)
+                    else:
+                        # Add new item
+                        merged_map[item_id] = item
+                
+                # 3. Reconstruct list
+                # Order: Preserve target order, append new source items
+                new_list = []
+                processed_ids = set()
+                
+                # Keep target order
+                for item in target_list:
+                    item_id = item[id_key]
+                    new_list.append(merged_map[item_id])
+                    processed_ids.add(item_id)
+                    
+                # Append remaining from source
+                for item in source_list:
+                    item_id = item[id_key]
+                    if item_id not in processed_ids:
+                        new_list.append(merged_map[item_id])
+                        processed_ids.add(item_id)
+                        
+                result[k] = new_list
+            else:
+                # Fallback: LWW
+                result[k] = v
         else:
             result[k] = v
     return result

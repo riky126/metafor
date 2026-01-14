@@ -196,6 +196,7 @@ class SyncManager:
                  poll_timeout: int = 60,
                  chunk_size: int = -1,
                  debounce_interval: int = 200,
+                 list_id_keys: Optional[List[str]] = None,
                  http_client: Optional[Any] = None):
         self.db = db
         self.upstream_url = upstream_url.rstrip('/')
@@ -209,7 +210,9 @@ class SyncManager:
         self.push_path = push_path
         self.pull_path = pull_path
         self.poll_timeout = poll_timeout
+        self.poll_timeout = poll_timeout
         self.chunk_size = chunk_size
+        self.list_id_keys = list_id_keys
         self.http_client = http_client
         
         self.hook = HookRegistrar()
@@ -896,7 +899,7 @@ class SyncManager:
                             # Both changed it. 
                             # If they are both dicts, DEEP MERGE them.
                             if isinstance(local_val, dict) and isinstance(remote_val, dict):
-                                resolved_doc[k] = deep_merge(local_val, remote_val)
+                                resolved_doc[k] = deep_merge(local_val, remote_val, list_id_keys=self.list_id_keys)
                             else:
                                 # Scalar conflict or type mismatch -> Remote Wins
                                 resolved_doc[k] = remote_val
@@ -912,7 +915,7 @@ class SyncManager:
 
                 elif conflict.local_doc and conflict.remote_doc:
                      # Fallback to 2-way deep merge if no base
-                    resolved_doc = deep_merge(conflict.local_doc, conflict.remote_doc)
+                    resolved_doc = deep_merge(conflict.local_doc, conflict.remote_doc, list_id_keys=self.list_id_keys)
                     resolved_doc["_lastModified"] = HybridLogicalClock.get().now()
                     _set_revision(resolved_doc, parent_rev=conflict.remote_doc.get("_rev"))
                     console.log(f"SyncManager: 2-Way Deep Merge (No Base) for {conflict.table_name}:{key}")
