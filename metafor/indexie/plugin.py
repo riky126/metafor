@@ -441,10 +441,13 @@ class Table:
         self.db._db_instance.deleteObjectStore(self.name)
 
     async def update(self, key: Any, changes: Union[Dict[str, Any], Callable[[Dict[str, Any]], None]], silent: bool = False, optimistic: bool = False):
+
         obj = await self.get(key)
+        original_obj_was_none = obj is None
         
         if obj is None:
              if isinstance(changes, dict):
+
                  obj = changes
              else:
                  raise IndexedDBError(f"Key {key} not found in {self.name} and cannot upsert with callable")
@@ -454,8 +457,17 @@ class Table:
             else:
                 obj.update(changes)
         
-        await self.put(obj, silent=silent, optimistic=optimistic) 
+
+        try:
+            await self.put(obj, silent=silent, optimistic=optimistic)
+        except StorageError as e:
+            # If we were attempting an Upsert (original obj was None) and validation failed,
+            # it likely means the user expected a partial update on an existing record.
+            if original_obj_was_none:
+                 raise StorageError(f"Update failed: Record with key '{key}' not found, and partial data insufficient for new record. Details: {e}")
+            raise e
         return True
+
 
     async def sync_electric(self, url: str, params: Dict[str, Any] = None, headers: Dict[str, str] = None, http_client = None):
         return await Support.sync_electric(self, url, params, headers, http_client)

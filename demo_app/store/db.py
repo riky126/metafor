@@ -26,6 +26,7 @@ user_schema = Schema()
 user_schema.field("id").int().optional()
 user_schema.field("name").string().required().trim()
 user_schema.field("email").string().email().required().trim()
+user_schema.field("roles").list().optional()
 # You can add more fields here as needed, e.g.
 # user_schema.field("role").string().optional()
 
