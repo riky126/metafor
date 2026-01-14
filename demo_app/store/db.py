@@ -14,8 +14,10 @@ db.version(2).stores({
 db.enable_sync(
     upstream_url="http://localhost:8000/sync", 
     pull_enabled=True,
-    poll_timeout=30,
-    debounce_interval=0,
+    options={
+        "poll_timeout": 30,
+        "debounce_interval": 100
+    },
     http_client=http_client
 )
 

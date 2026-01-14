@@ -31,10 +31,7 @@ class Indexie:
     def enable_sync(self, upstream_url: str, pull_enabled: bool = True, 
                     conflict_handler: Optional[Callable] = None,
                     conflict_strategy: str = SyncManager.ConflictStrategy.LAST_WRITE_WINS,
-                    push_path: str = "/push", pull_path: str = "/pull",
-                    poll_timeout: int = 30,
-                    chunk_size: int = -1,
-                    debounce_interval: int = 200,
+                    options: Optional[Dict[str, Any]] = None,
                     http_client: Optional[Any] = None):
         """
         Enable synchronization with conflict resolution.
@@ -43,30 +40,30 @@ class Indexie:
             upstream_url: Backend sync endpoint URL
             pull_enabled: Whether to enable pull replication (default: True)
             conflict_handler: Custom conflict resolution function (optional)
-            conflict_strategy: Conflict resolution strategy. Options:
-                - "last_write_wins" (default): Use document with latest timestamp
-                - "local_wins": Always keep local version
-                - "remote_wins": Always accept remote version
-                - "merge": Merge both documents (remote takes precedence)
-                - "custom": Use conflict_handler function
-            push_path: Custom push endpoint path (default: /push)
-            pull_path: Custom pull endpoint path (default: /pull)
-            poll_timeout: Long polling timeout in seconds (default: 60)
-            chunk_size: Limit number of documents per pull (default: -1, unlimited)
-            http_client: Optional HTTP client instance (e.g. metafor.http.Http)
+            conflict_strategy: Conflict resolution strategy.
+            options: Dictionary containing sync options:
+                - push_path: Custom push endpoint path (default: /push)
+                - pull_path: Custom pull endpoint path (default: /pull)
+                - poll_timeout: Long polling timeout in seconds (default: 60)
+                - chunk_size: Limit number of documents per pull (default: -1, unlimited)
+                - debounce_interval: Debounce interval in ms (default: 200)
+            http_client: Optional HTTP client instance
         """
         from .sync import SyncManager, OfflineQueue, ReplicationState, ConflictHistory
+        
+        opts = options or {}
+        
         self.sync_manager = SyncManager(
             self, 
             upstream_url, 
             pull_enabled=pull_enabled,
             conflict_handler=conflict_handler,
             conflict_strategy=conflict_strategy,
-            push_path=push_path,
-            pull_path=pull_path,
-            poll_timeout=poll_timeout,
-            chunk_size=chunk_size,
-            debounce_interval=debounce_interval,
+            push_path=opts.get("push_path", "/push"),
+            pull_path=opts.get("pull_path", "/pull"),
+            poll_timeout=opts.get("poll_timeout", 30),
+            chunk_size=opts.get("chunk_size", -1),
+            debounce_interval=opts.get("debounce_interval", 200),
             http_client=http_client
         )
         
