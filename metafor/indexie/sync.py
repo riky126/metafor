@@ -9,7 +9,7 @@ from js import console, navigator, window
 from pyodide.ffi import create_proxy
 
 from .plugin import Table, HookRegistrar
-from .support import IndexedDBError, _to_js_obj, _generate_revision, _get_revision, _set_revision, _ensure_revision
+from .support import IndexedDBError, _to_js_obj, _generate_revision, _get_revision, _set_revision, _ensure_revision, HybridLogicalClock, deep_merge
 
 
 # --- Conflict Resolution ---
@@ -25,7 +25,9 @@ class Conflict:
         self.remote_doc = remote_doc
         self.local_rev = local_rev
         self.remote_rev = remote_rev
-        self.timestamp = time.time() * 1000
+        self.local_rev = local_rev
+        self.remote_rev = remote_rev
+        self.timestamp = HybridLogicalClock.get().now()
         self.id = str(uuid.uuid4())
     
     def to_dict(self) -> Dict[str, Any]:
@@ -108,7 +110,9 @@ class OfflineQueue:
             # We UPDATE the value to the latest
             existing["op"] = op
             existing["value"] = stored_value
-            existing["timestamp"] = time.time() * 1000
+            existing["op"] = op
+            existing["value"] = stored_value
+            existing["timestamp"] = HybridLogicalClock.get().now()
             
             # If the original didn't have base info (e.g. was a create), and this one does?
             # If original was create (base=None), valid.
@@ -128,8 +132,9 @@ class OfflineQueue:
             "table": table_name,
             "key": key,
             "op": op,
+            "op": op,
             "value": stored_value,
-            "timestamp": time.time() * 1000,
+            "timestamp": HybridLogicalClock.get().now(),
             "base_rev": base_rev,
             "base_doc": base_doc
         }
@@ -299,7 +304,7 @@ class SyncManager:
                 # 1. Clear event immediately.
                 self._push_event.clear()
                 
-                debounce_sec = self.debounce_interval / 500.0
+                debounce_sec = self.debounce_interval / 1000.0
                 while True:
                     try:
                         # Wait for potentially MORE events
@@ -438,7 +443,7 @@ class SyncManager:
                 _ensure_revision(item)
             
             # Mutation timestamps
-            now = time.time() * 1000
+            now = HybridLogicalClock.get().now()
             
             # Manual Sync Path: Construct mutation data but don't enqueue/push
             mutation = {
@@ -453,7 +458,7 @@ class SyncManager:
                 # Top-level metadata for conflict resolution and manual sync
                 "_rev": base_rev, 
                 "base_doc": base_doc,
-                "_lastModified": int(now + 1),
+                "_lastModified": now,
                 "all": payload.get("all", False) # Pass through bulk flag if any
             }
             
@@ -599,6 +604,11 @@ class SyncManager:
                 val_rev = val.get("_rev") if isinstance(val, dict) else None
                 remote_rev = d.get("_rev") or val_rev
                 
+                # Update HLC with remote timestamp
+                remote_ts = d.get("_lastModified")
+                if remote_ts:
+                    HybridLogicalClock.get().update(remote_ts)
+
                 # If deleted, treat val as tombstone or create one if val is None
                 if _deleted:
                      # For deleted items, val is often None. Initialize as tombstone dict.
@@ -845,11 +855,31 @@ class SyncManager:
                 
                 if conflict.local_doc and conflict.remote_doc and base_doc:
                     # Perform 3-Way Merge
+                    # Use deep_merge for intelligent merging
+                    # Strategy:
+                    # 1. Start with Base as foundation (if possible, but we don't have good 3-way deep merge algo simple enough)
+                    # 2. Re-implement logic: 
+                    #    - If Local changed it vs Base, keep Local
+                    #    - If Remote changed it vs Base, keep Remote
+                    #    - If Both changed, use Deep Merge (Remote wins collisions)
+                    
+                    # For simplicity and robustness with deep structures, let's do:
+                    # 1. Take Base
+                    # 2. Deep Merge Local changes
+                    # 3. Deep Merge Remote changes (Remote wins collisions)
+                    
+                    # BUT distinguishing "changes" requires diffing.
+                    # Simplified Deep LWW Merge:
+                    # Target = DeepMerge(Local, Remote) -- Remote overwrites Local scalars, merges dicts.
+                    
+                    # Let's try to respect the 3-way logic for top-level keys first (as before), 
+                    # but use deep_merge for the conflicting keys if they are dicts.
+                    
                     resolved_doc = {}
                     all_keys = set(conflict.local_doc.keys()) | set(conflict.remote_doc.keys()) | set(base_doc.keys())
                     
                     for k in all_keys:
-                        if k.startswith("_"): continue # Skip metadata for logic, add back later
+                        if k.startswith("_"): continue 
                         
                         base_val = base_doc.get(k)
                         local_val = conflict.local_doc.get(k)
@@ -858,34 +888,35 @@ class SyncManager:
                         if local_val == remote_val:
                             resolved_doc[k] = local_val
                         elif local_val == base_val and remote_val != base_val:
-                            # Remote changed it, Local didn't -> Take Remote
+                            # Remote changed it
                             resolved_doc[k] = remote_val
                         elif remote_val == base_val and local_val != base_val:
-                            # Local changed it, Remote didn't -> Take Local
+                            # Local changed it
                             resolved_doc[k] = local_val
                         else:
-                            # Both changed it differently -> Conflict!
-                            # For automatic merge, we often prefer Remote or Local. 
-                            # Let's prefer Remote (server authority) for collision.
-                            resolved_doc[k] = remote_val
+                            # Both changed it. 
+                            # If they are both dicts, DEEP MERGE them.
+                            if isinstance(local_val, dict) and isinstance(remote_val, dict):
+                                resolved_doc[k] = deep_merge(local_val, remote_val)
+                            else:
+                                # Scalar conflict or type mismatch -> Remote Wins
+                                resolved_doc[k] = remote_val
                             
                     # Add back metadata from Remote (it usually wins for _rev, _lastModified)
                     resolved_doc["_rev"] = conflict.remote_doc.get("_rev")
-                    resolved_doc["_lastModified"] = time.time() * 1000
+                    resolved_doc["_lastModified"] = HybridLogicalClock.get().now()
                     
-                    # Generate a NEW revision for the merged result? 
-                    # Actually, if we merge, we are creating a NEW version on top of Remote.
-                    # So we should rotate.
+                    # Generate a NEW revision
                     _set_revision(resolved_doc, parent_rev=resolved_doc["_rev"])
                     
-                    console.log(f"SyncManager: 3-Way Merge successful for {conflict.table_name}:{key}")
+                    console.log(f"SyncManager: 3-Way Deep Merge successful for {conflict.table_name}:{key}")
 
                 elif conflict.local_doc and conflict.remote_doc:
-                     # Fallback to 2-way merge if no base (simple overlay)
-                    resolved_doc = {**conflict.local_doc, **conflict.remote_doc}
-                    resolved_doc["_lastModified"] = time.time() * 1000
+                     # Fallback to 2-way deep merge if no base
+                    resolved_doc = deep_merge(conflict.local_doc, conflict.remote_doc)
+                    resolved_doc["_lastModified"] = HybridLogicalClock.get().now()
                     _set_revision(resolved_doc, parent_rev=conflict.remote_doc.get("_rev"))
-                    console.log(f"SyncManager: 2-Way Merge (No Base) for {conflict.table_name}:{key}")
+                    console.log(f"SyncManager: 2-Way Deep Merge (No Base) for {conflict.table_name}:{key}")
                 elif conflict.remote_doc:
                     resolved_doc = conflict.remote_doc
                 else:

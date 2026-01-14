@@ -50,6 +50,93 @@ def _to_js_obj(data):
     """Helper to convert Python dict to JS Object safely."""
     return to_js(data, dict_converter=Object.fromEntries)
 
+
+# --- Deep Merge Utility ---
+
+def deep_merge(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Recursively merges source into target.
+    - Dicts are merged recursively.
+    - Lists are overwritten by source (LWW).
+    - Primitives are overwritten by source.
+    Returns the modified target (or a new dict if target was None).
+    """
+    if not isinstance(target, dict) or not isinstance(source, dict):
+        return source
+        
+    result = target.copy()
+    for k, v in source.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
+# --- Hybrid Logical Clock ---
+
+class HybridLogicalClock:
+    """
+    Hybrid Logical Clock (HLC) implementation.
+    Provides monotonic timestamps that are close to physical time.
+    """
+    _instance = None
+    
+    def __init__(self):
+        self.last_physical_time = 0
+        self.logical_counter = 0
+
+    @classmethod
+    def get(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def now(self) -> float:
+        """
+        Returns a timestamp (float) representing the current HLC time.
+        HLC = physical_ms + (counter * 0.001)
+        """
+        physical_time = int(time.time() * 1000)
+        
+        if physical_time > self.last_physical_time:
+            self.last_physical_time = physical_time
+            self.logical_counter = 0
+        else:
+            self.logical_counter += 1
+            
+        return self.last_physical_time + (self.logical_counter * 0.001)
+
+    def update(self, remote_timestamp: float):
+        """
+        Update local clock based on a received remote timestamp.
+        """
+        if not remote_timestamp: return
+
+        physical_time = int(time.time() * 1000)
+        
+        remote_physical = int(remote_timestamp)
+        remote_logical = int((remote_timestamp - remote_physical) * 1000)
+        
+        if physical_time > self.last_physical_time and physical_time > remote_physical:
+             # Local physical time is ahead of both
+             self.last_physical_time = physical_time
+             self.logical_counter = 0
+        elif remote_physical > self.last_physical_time and remote_physical > physical_time:
+             # Remote is ahead
+             self.last_physical_time = remote_physical
+             self.logical_counter = remote_logical + 1
+        elif self.last_physical_time > physical_time and self.last_physical_time > remote_physical:
+             # Local logical time pushed us ahead
+             self.logical_counter += 1
+        else:
+             # Tie or mixed, ensure advance
+             self.logical_counter = max(self.logical_counter, remote_logical) + 1
+             
+        # Ensure strict monotonicity is preserved by the 'logical_counter += 1' nature 
+        # combined with 'last_physical_time' maintenance.
+
+
 # --- Revision Tracking Utilities ---
 
 def _generate_revision(doc: Dict[str, Any], parent_rev: Optional[str] = None) -> str:
@@ -92,7 +179,7 @@ def _set_revision(doc: Dict[str, Any], rev: Optional[str] = None, parent_rev: Op
     if rev is None:
         rev = _generate_revision(doc, parent_rev)
     doc["_rev"] = rev
-    doc["_lastModified"] = time.time() * 1000
+    doc["_lastModified"] = HybridLogicalClock.get().now()
     return rev
 
 def _ensure_revision(doc: Dict[str, Any]) -> str:
