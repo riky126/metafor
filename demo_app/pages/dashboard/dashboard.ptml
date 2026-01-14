@@ -131,7 +131,7 @@
 
     async def do_update():
         await db.users.put({"name": 'John Doe', "email": 'john@mail.com', "id": 4})
-        await asyncio.sleep(3) 
+        # await asyncio.sleep(2) 
         await db.users.update(4, {"name": 'John O Doe'})
 
     def update_person(e):
