@@ -67,7 +67,19 @@ The sync engine implements a **Revision Tree Architecture** (similar to CouchDB/
 -   **Structure**: Data is stored as a tree of revisions. Each update creates a new child node (e.g., `1-abc` -> `2-xyz`).
 -   **Generation-Based**: Revisions use an `N-hash` format (`Generation-Hash`) to track ancestry depth explicitly.
 -   **Automatic Rotation**: Every local update automatically increments the revision generation, creating a traceable history.
+-   **Automatic Rotation**: Every local update automatically increments the revision generation, creating a traceable history.
 -   **Conflict Handling**: Divergent branches (e.g., Local `2-xyz` vs Remote `2-def`) differ in hash but share ancestry, allowing automated 3-way merging.
+
+### 4. Hybrid Logical Clock (HLC)
+-   **Monotonic Time**: Replaces wall-clock time with a Hybrid Logical Clock to ensure strictly increasing timestamps even across distributed devices with skewed clocks.
+-   **Precision**: Timestamps are floats (`1768397553518.001`), combining physical time and a logical counter.
+
+### 5. Deep Merge Resolution
+-   **Recursive Merging**: The sync engine supports deep recursive merging for dictionaries.
+-   **Smart Conflict Resolution**:
+    -   **Dictionaries**: Merged recursively.
+    -   **Lists/Arrays**: Replaced (Last-Write-Wins).
+    -   **Scalars**: Remote wins on collision.
 
 ### Revision Tree Visualization
 
@@ -143,7 +155,10 @@ graph TD
     db.enable_sync(url, conflict_strategy=SyncManager.ConflictStrategy.REMOTE_WINS)
     ```
 
-4.  **Merge (3-Way)**: Uses the **Revision Tree** to find the common ancestor (**Base Document**, retrieved from the Offline Queue). It intelligently combines non-conflicting changes from both Local and Remote branches.
+4.  **Merge (3-Way Deep Merge)**: Uses the **Revision Tree** to find the common ancestor (**Base Document**). It performs a **Deep Recursive Merge** of the Local and Remote changes.
+    -   **Dictionaries** are merged.
+    -   **Lists** are overwritten (Last-Write-Wins).
+    -   **Collisions** on scalar values favor the **Remote** version.
     ```python
     db.enable_sync(url, conflict_strategy=SyncManager.ConflictStrategy.MERGE)
     ```
@@ -226,7 +241,7 @@ Your server tables (e.g., Postgres/MySQL) need these columns:
 | Column | Type | Purpose |
 | :--- | :--- | :--- |
 | `_rev` | `VARCHAR` | Stores the current revision ID (e.g., `1-abc...`). Used to detect if an incoming PUSH is based on the current version or an old one. |
-| `_lastModified` | `BIGINT` | Unix timestamp (ms) of the last update. The "Tie-Breaker" for Last-Write-Wins. |
+| `_lastModified` | `DOUBLE / FLOAT` | **Changed**: Now uses a **Float** (e.g., `123456789.001`) to support Hybrid Logical Clocks (HLC). Do NOT cast to Integer/BigInt or precision will be lost. |
 | `_deleted` | `BOOLEAN` | (Optional but recommended) Stores "Soft Deletes" (Tombstones) so they can be synced to clients. |
 
 ### Server Logic (Push Handler)

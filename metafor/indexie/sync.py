@@ -458,8 +458,7 @@ class SyncManager:
                 # Top-level metadata for conflict resolution and manual sync
                 "_rev": base_rev, 
                 "base_doc": base_doc,
-                "_lastModified": now,
-                "all": payload.get("all", False) # Pass through bulk flag if any
+                "_lastModified": now
             }
             
             # Trigger global SyncManager hooks

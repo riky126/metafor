@@ -401,7 +401,7 @@ Your server must return the new checkpoint (the latest timestamp of the returned
 For sync to function correctly, your backend **must** persist and return the following system fields in the pull/sync response:
 
 *   **`_rev`**: The generation-based revision ID (e.g., `1-9a7b...`). This is critical for conflict resolution and revisions trees.
-*   **`_lastModified`**: Timestamp (ms) of the last change. Used for "Last Write Wins" strategy.
+*   **`_lastModified`**: **Float/Double** (e.g., `1768397553518.001`). Timestamp of the last change. Must be a float to support Hybrid Logical Clocks (HLC).
 *   **`_deleted`**: Boolean flag indicating if the record is a tombstone (deleted). Crucial for propagating deletions to clients.
 
 Ensure your backend database schema includes these columns.
