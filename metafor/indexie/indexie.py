@@ -26,7 +26,9 @@ class Indexie:
         self._tables: Dict[str, Table] = {}
         self._is_open = False
         self.query_engine = QueryEngine(self)
+        self.query_engine = QueryEngine(self)
         self.sync_manager = None
+        self._sync_enrollments = set()
         
     def enable_sync(self, upstream_url: str, pull_enabled: bool = True, 
                     conflict_handler: Optional[Callable] = None,
@@ -77,6 +79,11 @@ class Indexie:
         
         if self._is_open:
              self.sync_manager.start()
+        
+        # Process pending enrollments
+        for table_name in self._sync_enrollments:
+            self.sync_manager.enroll_table(table_name)
+        self._sync_enrollments.clear()
              
         return self
 

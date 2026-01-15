@@ -227,6 +227,13 @@ class SyncManager:
         self._sync_task = None
         self._push_event = asyncio.Event()
         self._running = False
+        
+        self.enrolled_tables = set()
+
+    def enroll_table(self, table_name: str):
+        """Register a table for synchronization."""
+        self.enrolled_tables.add(table_name)
+        console.log(f"SyncManager: Enrolled table '{table_name}' for sync.")
 
     @property
     def is_online(self) -> bool:
@@ -434,6 +441,10 @@ class SyncManager:
         base_doc = payload.get("base_doc")
         optimistic = payload.get("optimistic", False)
         
+        # Guard: Only sync enrolled tables
+        if table_name not in self.enrolled_tables:
+            return
+        
         if optimistic:
             # Ensure revision metadata is set on the item
             if item and isinstance(item, dict):
@@ -509,6 +520,11 @@ class SyncManager:
             if self.chunk_size != -1:
                 params.append(f"chunk_limit={self.chunk_size}")
             
+            # Send enrolled tables
+            if self.enrolled_tables:
+                tables_csv = ",".join(sorted(list(self.enrolled_tables)))
+                params.append(f"tables={tables_csv}")
+
             if params:
                 url += "?" + "&".join(params)
                 
@@ -1068,10 +1084,16 @@ class SyncManager:
                 "client_id": str(self.db.name) # Use DB name or unique client ID
             }
             
+            # Construct Push URL with tables param
+            push_url = f"{self.upstream_url}{self.push_path}"
+            if self.enrolled_tables:
+                tables_csv = ",".join(sorted(list(self.enrolled_tables)))
+                push_url += f"?tables={tables_csv}"
+
             # Send to server (Using fetch or http_client)
             if self.http_client:
                  try:
-                     resp_dict = await self.http_client.post(f"{self.upstream_url}{self.push_path}", data=payload)
+                     resp_dict = await self.http_client.post(push_url, data=payload)
                  except Exception as inner_e:
                      console.error(f"SyncManager: http_client.post failed: {inner_e!r}")
                      raise inner_e
@@ -1102,7 +1124,7 @@ class SyncManager:
                     "credentials": "include"
                 }
                 
-                resp = await fetch(f"{self.upstream_url}{self.push_path}", _to_js_obj(options))
+                resp = await fetch(push_url, _to_js_obj(options))
                 
                 if resp.ok:
                     # Parse confirmation receipt

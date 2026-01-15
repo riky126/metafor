@@ -185,6 +185,19 @@ class Table:
         self.schema = schema
         return self
 
+    def sync_enroll(self):
+        """Enroll this table in the sync process."""
+        if hasattr(self.db, "sync_manager") and self.db.sync_manager:
+            self.db.sync_manager.enroll_table(self.name)
+        else:
+             # Buffer enrollment if SyncManager not yet created
+             if hasattr(self.db, "_sync_enrollments"):
+                 self.db._sync_enrollments.add(self.name)
+             else:
+                 from js import console
+                 console.warn(f"Cannot enroll {self.name}: SyncManager not enabled on DB.")
+
+
     def _validate_item(self, item: Dict[str, Any]):
         # Skip validation for tombstones (deleted records)
         if item.get("_deleted") or item.get("deleted"):

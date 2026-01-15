@@ -11,6 +11,8 @@ db.version(2).stores({
     "users": "++id, &email, name"
 })
 
+db.users.sync_enroll()
+
 db.enable_sync(
     upstream_url="http://localhost:8000/sync", 
     pull_enabled=True,
