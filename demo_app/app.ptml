@@ -18,7 +18,7 @@
     async def init_db():
         await db.open()
         DBContext.set_value(db)
-        
+
         # try:
         #      # Check if user exists
         #      existing_user = await db.users.where("email").equals("halem@mail.com").first()

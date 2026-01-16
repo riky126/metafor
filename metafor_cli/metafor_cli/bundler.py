@@ -289,14 +289,9 @@ class MetaforBundler:
                  print(f"Error during parallel pyc compilation: {e}")
 
         # Create Wheel from staging
-        # We COPY staging to a temp build dir because _create_wheel is destructive (pyc compilation)
-        # Use a unique directory to avoid shutil.copytree race conditions/errors
-        timestamp = int(time.time() * 1000)
-        wheel_build_dir = self.out_dir / f"_wheel_build_tmp_{timestamp}"
+        # We used to copy to a temp dir here, but that was redundant and slow.
+        # Now we check timestamps directly in staging.
         
-        if wheel_build_dir.exists(): shutil.rmtree(wheel_build_dir)
-        shutil.copytree(wheel_staging, wheel_build_dir)
-
         wheel_filename = f"{self.setup_config.get('name', 'metafor_app')}-{self.setup_config.get('version', '0.1.0')}-py3-none-any.whl"
         wheel_path = public_dir / wheel_filename
         
@@ -305,12 +300,11 @@ class MetaforBundler:
         # Or if previous wheel is missing
         needs_wheel_rebuild = not wheel_path.exists()
         
-        # Optimization: We could track if we actually copied/compiled anything above.
-        # But we also need to check if existing wheel is older than staging (in case of interrupted build)
+        # Check if existing wheel is older than staging
         if not needs_wheel_rebuild:
-            # Check mtimes
              wheel_mtime = wheel_path.stat().st_mtime
-             for root, dirs, files in os.walk(wheel_build_dir):
+             # Walk staging directly to check timestamps
+             for root, dirs, files in os.walk(wheel_staging):
                 for file in files:
                     file_path = pathlib.Path(root) / file
                     if file_path.stat().st_mtime > wheel_mtime:
@@ -324,9 +318,6 @@ class MetaforBundler:
             print(f"Wheel created in {public_dir}")
         else:
             print(f"Wheel up to date.")
-        
-        # Cleanup TEMP build dir, but KEEP staging
-        shutil.rmtree(wheel_build_dir)
         
         # Save cache
         self.cache.save()

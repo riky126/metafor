@@ -35,6 +35,13 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // CRITICAL: Do NOT intercept Metafor infrastructure requests (SSE, build artifacts)
+  // Let them go directly to the network to avoid buffering/caching issues
+  // Also exclude .whl and main.py to prevent caching stale code during dev
+  if (event.request.url.includes('/_metafor/')) {
+    return;
+  }
+
   // Skip cross-origin requests (unless you want to cache them)
   if (!event.request.url.startsWith(self.location.origin)) {
     // For external resources, use network-first strategy
@@ -98,4 +105,3 @@ self.addEventListener('message', (event) => {
     );
   }
 });
-

@@ -1,8 +1,11 @@
-
 import os
 import sys
 import threading
 import time
+import hashlib
+import base64
+import struct
+import select
 from http import server
 from .builder import build_project
 
@@ -88,26 +91,67 @@ def run_server(host, port):
     watcher_thread = threading.Thread(target=start_watcher, daemon=True)
     watcher_thread.start()
 
-    class Handler(server.SimpleHTTPRequestHandler):
+    class WebSocketHandler:
+        """Mixin for WebSocket Support (RFC 6455)"""
+        
+        def handshake(self):
+            key = self.headers.get('Sec-WebSocket-Key')
+            if not key:
+                return False
+            
+            # Compute Accept
+            # 1. Append Magic GUID
+            # 2. SHA1
+            # 3. Base64
+            GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+            accept = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
+            
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+            return True
+
+        def send_frame(self, data, opcode=0x1):
+            """Send a WebSocket frame."""
+            # FIN=1, Opcode=text(1) or close(8)
+            header = bytearray()
+            b1 = 0x80 | (opcode & 0x0F)
+            header.append(b1)
+            
+            payload = data.encode('utf-8') if isinstance(data, str) else data
+            length = len(payload)
+            
+            if length <= 125:
+                header.append(length)
+            elif length <= 65535:
+                header.append(126)
+                header.extend(struct.pack("!H", length))
+            else:
+                header.append(127)
+                header.extend(struct.pack("!Q", length))
+                
+            try:
+                self.wfile.write(header + payload)
+                self.wfile.flush()
+            except BrokenPipeError:
+                pass
+
+        def read_frame(self):
+            """Read a WebSocket frame (blocking)."""
+            # Implementation omitted for simplicity as we only push updates
+            # But we must read to detect close
+            pass
+
+    class Handler(server.SimpleHTTPRequestHandler, WebSocketHandler):
         def do_GET(self):
             path = self.path.split("?")[0]
             
-            if path == '/_metafor/events':
-                self.send_response(200)
-                self.send_header("Content-type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Connection", "close")
-                self.end_headers()
-                
-                # Wait for build to finish
-                with build_condition:
-                    build_condition.wait()
-                
-                try:
-                    self.wfile.write(b"data: reload\n\n")
-                    self.wfile.flush()
-                except BrokenPipeError:
-                    pass
+            # WebSocket Upgrade
+            if self.headers.get("Upgrade") == "websocket" and path == "/_metafor/ws":
+                if self.handshake():
+                    self.handle_websocket()
                 return
 
             if not path.startswith("/metafor/"):
@@ -128,18 +172,36 @@ def run_server(host, port):
                         script = b"""
 <script>
 (function() {
-    const evtSource = new EventSource("/_metafor/events");
-    evtSource.onmessage = function(event) {
-        if (event.data === "reload") {
-            console.log("Reload signal received, reloading...");
-            window.location.reload();
-        }
-    };
-    evtSource.onerror = function(err) {
-        // EventSource errors are expected during development (connection interruptions)
-        // These are harmless and don't affect the app functionality
-    };
-    window.addEventListener('beforeunload', () => { console.log("Closing EventSource"); evtSource.close(); });
+    let ws;
+    
+    function connect() {
+        // Use ws:// or wss:// depending on current protocol
+        const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        const url = `${proto}://${window.location.host}/_metafor/ws`;
+        
+        ws = new WebSocket(url);
+        
+        ws.onopen = function() {
+            console.log("[Metafor] Hot Module Reload Connected.");
+        };
+        
+        ws.onmessage = function(event) {
+            if (event.data === "reload") {
+                window.location.reload();
+            }
+        };
+        
+        ws.onclose = function() {
+            console.warn("[Metafor] Connection lost. Retrying in 1s...");
+            setTimeout(connect, 1000);
+        };
+        
+        ws.ononerror = function(err) {
+            ws.close();
+        };
+    }
+    
+    connect();
 })();
 </script>
 </body>
@@ -154,8 +216,41 @@ def run_server(host, port):
                         return
                     except Exception as e:
                         print(f"Error injecting script: {e}")
-
+            
             return super().do_GET()
+            
+        def handle_websocket(self):
+            """Handle the WebSocket connection loop."""
+            # Register for build notifications
+            try:
+                # We need a way to break out of wait() if socket closes
+                # Standard waiting with timeout loop
+                while True:
+                    # Use select to check if client disconnected
+                    r, _, _ = select.select([self.connection], [], [], 0.05)
+                    if r:
+                        # Client sent something (likely close frame or ping), simple read to clear/detect close
+                        try:
+                            data = self.connection.recv(1024)
+                            if not data: break # Closed
+                        except:
+                            break # Error
+                    
+                    # Check for build
+                    acquired = build_condition.acquire(timeout=0.1)
+                    if acquired:
+                        # Wait for notify
+                        triggered = build_condition.wait(timeout=0.5) 
+                        build_condition.release()
+                        
+                        if triggered:
+                            self.send_frame("reload")
+                        
+            except (ConnectionResetError, BrokenPipeError):
+                pass
+            finally:
+                pass
+
 
         def log_request(self, code='-', size='-'):
             if isinstance(code, int):
