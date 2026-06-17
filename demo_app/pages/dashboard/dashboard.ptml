@@ -107,11 +107,12 @@
 
     async def init_electric():
         # --- ElectricSQL Sync Demo ---
-        await db.users.sync_electric(
-            url="http://localhost:8000/stream/electric",
-            params={"table": "users"},
-            http_client=http_client
-        )
+        pass
+        # await db.users.sync_electric(
+        #     url="http://localhost:8000/stream/electric",
+        #     params={"table": "users"},
+        #     http_client=http_client
+        # )
 
 
     # Create an effect that will track changes

@@ -8,7 +8,7 @@ db = Indexie("MyApp")
 # Define Schema
 db.version(2).stores({
     "myStore": "++id",
-    "users": "++id, &email, name"
+    "users": "++id, &email, name, roles"
 })
 
 db.users.sync_enroll()

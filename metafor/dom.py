@@ -135,20 +135,32 @@ class DOMNode:
         self._process_children(self.children)
 
     def _add_event_listener(self, event_name, handler):
-        # Create a wrapper to ensure the handler is called with the event
-        def event_wrapper(event):
-            # Handle 0-argument lambdas (e.g. from () => ...)
-            import inspect
+        import asyncio
+        import inspect
+
+        def _invoke_handler(event):
             try:
                 sig = inspect.signature(handler)
-                if len(sig.parameters) == 0:
-                    handler()
-                else:
-                    handler(event)
-            except ValueError:
-                # Built-ins or other callables where signature fails
-                handler(event)
-        
+                zero_arg = len(sig.parameters) == 0
+            except (TypeError, ValueError):
+                zero_arg = False
+
+            if inspect.iscoroutinefunction(handler):
+                coro = handler() if zero_arg else handler(event)
+                asyncio.ensure_future(coro)
+                return
+
+            try:
+                result = handler() if zero_arg else handler(event)
+            except (TypeError, ValueError):
+                result = handler(event)
+
+            if inspect.iscoroutine(result):
+                asyncio.ensure_future(result)
+
+        def event_wrapper(event):
+            _invoke_handler(event)
+
         proxy = create_proxy(event_wrapper)
         self.element.addEventListener(event_name, proxy)
 
@@ -192,7 +204,7 @@ class DOMNode:
             # For cases where you absolutely need to set raw HTML
             raw_html = value.get('__inner_html', '')
             self.set_unsafe_html(raw_html)
-        elif key == "role" or key.startswith("aria-"):
+        elif key == "role" or key.startswith("aria-") or key.startswith("data-"):
             # ARIA attributes must be set using setAttribute
             # Handle boolean values: True -> "true", False -> remove attribute
             # Handle None: remove attribute
