@@ -422,7 +422,9 @@ class ModuleCodeGenerator:
         else:
              code.append(f"@component(props={props_str})")
              
-        code.append(f"def {ctx['component_name']}(**{ctx['props_block_name']}):")
+        is_async = any('await ' in line for line, _ in ctx['body_code'])
+        def_prefix = "async def" if is_async else "def"
+        code.append(f"{def_prefix} {ctx['component_name']}(**{ctx['props_block_name']}):")
         
         for name in ctx['props_config']:
             code.append(f"    {name} = {ctx['props_block_name']}.get('{name}')")

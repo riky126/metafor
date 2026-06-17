@@ -3,9 +3,9 @@ import asyncio
 import json
 from collections import defaultdict
 from typing import Callable, Any, List, Dict, Union, Optional
-from js import document, setTimeout, console
+from js import document, setTimeout, console, queueMicrotask
 from metafor.utils.html import html_sanitize
-from pyodide.ffi import create_proxy, JsProxy
+from pyodide.ffi import create_proxy, JsProxy, create_once_callable
 from copy import deepcopy
 from contextlib import contextmanager
 
@@ -54,16 +54,12 @@ class Scheduler:
         if not self.scheduled:
             self.scheduled = True
             try:
-                loop = asyncio.get_event_loop()
-                loop.create_task(self.flush())
-            except RuntimeError:
-                # Fallback for environments without a running loop (though one should exist)
-                 pass
+                queueMicrotask(create_once_callable(self.flush))
+            except Exception as e:
+                # Fallback or error logging
+                console.error(f"Error scheduling microtask: {e}")
 
-    async def flush(self):
-        # Allow other tasks to run (yielding control)
-        await asyncio.sleep(0)
-        
+    def flush(self):
         while self.queue:
             # Snapshot the current queue to avoid infinite loops if tasks re-enqueue
             tasks = list(self.queue)
@@ -76,20 +72,17 @@ class Scheduler:
                      elif callable(task):
                          res = task()
                          if asyncio.iscoroutine(res):
-                             loop = asyncio.get_event_loop()
-                             loop.create_task(res)
+                             try:
+                                 loop = asyncio.get_event_loop()
+                                 loop.create_task(res)
+                             except RuntimeError:
+                                 pass
                  except Exception as e:
                      if _global_error_handler:
                          _global_error_handler(e)
                      else:
                          console.error(f"Error executing scheduled task: {e}")
             
-            # Yield again to allow IO or other tasks if queue refills immediately? 
-            # For now, we clear one batch. If more is added, self.scheduled is still True?
-            # Actually we should reset scheduled flag *after* we are done or *before*?
-            # If we reset before loop, a new task creates a new flush task.
-            # Let's reset at the very end.
-        
         self.scheduled = False
 
 _scheduler = Scheduler()

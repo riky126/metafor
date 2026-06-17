@@ -101,6 +101,7 @@ class DOMNode:
             
         self.child_bindings = []
         self.prop_bindings = []
+        self.event_listeners = []
         self.child_nodes = []
         self.mounted = False
         self.input_binding = None
@@ -163,6 +164,7 @@ class DOMNode:
 
         proxy = create_proxy(event_wrapper)
         self.element.addEventListener(event_name, proxy)
+        self.event_listeners.append((event_name, proxy))
 
     def _handle_ref(self, element, value):
         current_effect = get_current_effect()
@@ -258,6 +260,43 @@ class DOMNode:
             self._append_child(child)
 
     def _append_child(self, child):
+        import inspect
+        import asyncio
+        if inspect.iscoroutine(child):
+            placeholder = document.createComment("async loading...")
+            self.element.appendChild(placeholder)
+            
+            async def resolve_child():
+                try:
+                    result = await child
+                    if isinstance(result, DOMNode):
+                        self.element.replaceChild(result.element, placeholder)
+                        self.child_nodes.append(result)
+                        if not getattr(result, 'mounted', False):
+                            result.mounted = True
+                            current_effect = get_current_effect()
+                            if current_effect: current_effect.run_mounts()
+                    elif isinstance(result, list):
+                        for item in result:
+                            if isinstance(item, DOMNode):
+                                self.element.insertBefore(item.element, placeholder)
+                                self.child_nodes.append(item)
+                            else:
+                                self.element.insertBefore(document.createTextNode(str(item) if item is not None else ""), placeholder)
+                        self.element.removeChild(placeholder)
+                    else:
+                        text_node = document.createTextNode(str(result) if result is not None else "")
+                        self.element.replaceChild(text_node, placeholder)
+                except Exception as e:
+                    console.error(f"Error rendering async child: {e}")
+            
+            try:
+                loop = asyncio.get_event_loop()
+                loop.create_task(resolve_child())
+            except RuntimeError:
+                pass
+            return
+
         if isinstance(child, DOMNode):
             self.element.appendChild(child.element)
             self.child_nodes.append(child)
@@ -411,14 +450,21 @@ class DOMNode:
         for binding in self.prop_bindings:
             if isinstance(binding, JsProxy):
                 self.element.removeEventListener("input", binding)
+                binding.destroy()
             else:
                 binding.dispose()
+                
+        for event_name, proxy in self.event_listeners:
+            self.element.removeEventListener(event_name, proxy)
+            proxy.destroy()
+            
         if self.input_binding:
             self.input_binding.dispose()
 
         self._remove_styles()
         self.child_bindings = []
         self.prop_bindings = []
+        self.event_listeners = []
         self.child_nodes = []
         self.input_binding = None
         self.mounted = False

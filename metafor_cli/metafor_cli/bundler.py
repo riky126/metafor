@@ -305,7 +305,15 @@ class MetaforBundler:
                 
         elif task_type == 'sass':
             try:
-                import sass
+                try:
+                    import sass
+                except ImportError:
+                    print(f"  → Warning: SASS compilation requested for {rel_path} but 'libsass' is not installed. Skipping.")
+                    with open(artifact_path, 'w') as f:
+                        f.write("/* SASS compilation skipped: libsass not installed */\n")
+                    self.cache.update_cache(file_path)
+                    return task_type, file_path, artifact_path
+                    
                 with open(file_path, 'r') as f:
                     scss_content = f.read()
                 css_content = sass.compile(string=scss_content)

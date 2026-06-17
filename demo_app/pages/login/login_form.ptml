@@ -42,7 +42,10 @@
 
      def auth_fail(error):
           print(f"Authenticate fail: {error}")
-          set_auth_error(error.original_error.response.get("data").error)
+          try:
+               set_auth_error(error.original_error.response.get("data").error)
+          except AttributeError:
+               set_auth_error("Network error: Unable to connect to server.")
 
      def on_field_change(event):
           set_auth_error(None)
